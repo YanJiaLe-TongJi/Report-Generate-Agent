@@ -715,14 +715,17 @@ function renderFeedbacks() {
     const imageLinks = (row.image_paths || []).map((p, idx) =>
       `<a href="/api/feedback/image?path=${encodeURIComponent(p)}" target="_blank">图${idx + 1}</a>`
     ).join(' ');
+    const safeEmail = escapeHtml(row.user_email || '-');
+    const safeContent = escapeHtml(row.content || '');
+    const safeReply = escapeHtml(row.admin_reply || '-');
     return `
     <tr>
       <td>${row.id}</td>
-      <td>${row.user_email || '-'}</td>
-      <td style="max-width:280px;white-space:pre-wrap;">${row.content}</td>
+      <td>${safeEmail}</td>
+      <td style="max-width:280px;white-space:pre-wrap;">${safeContent}</td>
       <td>${imageLinks || '-'}</td>
       <td><span class="tag ${row.status === 'replied' ? 'tag-success' : 'tag-neutral'}">${statusText(row.status)}</span></td>
-      <td style="max-width:240px;white-space:pre-wrap;">${row.admin_reply || '-'}</td>
+      <td style="max-width:240px;white-space:pre-wrap;">${safeReply}</td>
       <td>
         <button class="btn-small btn-info" onclick="openReplyModal(${row.id})">回复</button>
       </td>

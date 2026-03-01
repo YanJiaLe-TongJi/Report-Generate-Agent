@@ -9,6 +9,7 @@ services:
       - "5001:5001"
     environment:
       SECRET_KEY: "${SECRET_KEY:?SECRET_KEY is required}"
+      API_KEY_ENCRYPTION_KEY: "${API_KEY_ENCRYPTION_KEY:?API_KEY_ENCRYPTION_KEY is required}"
       DATABASE_URL: "sqlite:////app/instance/app.db"
       TEXLIVE_ROOT: "/usr/share/texlive"
       FLASK_DEBUG: "${FLASK_DEBUG:-false}"

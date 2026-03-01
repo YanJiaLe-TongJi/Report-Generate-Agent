@@ -13,7 +13,10 @@
 cp .env.example .env
 ```
 
-修改 `.env` 中的 `SECRET_KEY` 为随机强密码。
+修改 `.env` 中的以下关键项：
+
+- `SECRET_KEY`：随机强密码
+- `API_KEY_ENCRYPTION_KEY`：Base64 编码的 32 字节密钥（用于加密用户 API Key）
 
 可选清理参数（默认即可）：
 

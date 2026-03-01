@@ -84,6 +84,7 @@ tasks = {}
 FILE_CLEANUP_TTL_SECONDS = int(os.environ.get('FILE_CLEANUP_TTL_SECONDS', str(10 * 60)))
 FILE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get('FILE_CLEANUP_INTERVAL_SECONDS', '60'))
 TASK_DIR_REGEX = re.compile(r'^[0-9a-fA-F-]{36}$')
+DOWNLOAD_URL_PREFIX = '/api/download/'
 
 
 def _normalize_storage_path(raw_path):
@@ -144,6 +145,39 @@ def _safe_upload_name(raw_name, prefix='file'):
     if safe_name:
         return safe_name
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _can_access_task(task, user):
+    """判断用户是否可访问任务。"""
+    if not task or not user.is_authenticated:
+        return False
+    return bool(user.is_admin or task.get('user_id') == user.id)
+
+
+def _public_task_payload(task):
+    """返回可对外暴露的任务状态，避免泄露敏感配置。"""
+    if not task:
+        return {}
+    return {
+        'status': task.get('status'),
+        'steps': task.get('steps') or [],
+        'current_step': task.get('current_step'),
+        'error': task.get('error'),
+        'download_url': task.get('download_url'),
+        'raw_url': task.get('raw_url'),
+        'tex_url': task.get('tex_url'),
+    }
+
+
+def _task_contains_download(task, filename):
+    """检查文件名是否属于任务输出。"""
+    for key in ('download_url', 'raw_url', 'tex_url'):
+        url = task.get(key)
+        if not isinstance(url, str) or not url.startswith(DOWNLOAD_URL_PREFIX):
+            continue
+        if Path(url[len(DOWNLOAD_URL_PREFIX):]).name == filename:
+            return True
+    return False
 
 
 def _ensure_data_file_extension(filename, original_name):
@@ -1394,16 +1428,27 @@ def revise_report(task_id):
 
 
 @app.route('/api/progress/<task_id>')
+@login_required
 def progress(task_id):
     """获取任务进度（SSE 流）"""
+    task = tasks.get(task_id)
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+    if not _can_access_task(task, current_user):
+        return jsonify({'error': '无权限访问该任务'}), 403
+
     def stream():
         while True:
-            task = tasks.get(task_id)
-            if not task:
+            current_task = tasks.get(task_id)
+            if not current_task:
                 yield f"data: {json.dumps({'status': 'error', 'error': '任务不存在'})}\n\n"
                 break
-            yield f"data: {json.dumps(task, ensure_ascii=False)}\n\n"
-            if task['status'] in ('done', 'error'):
+            if not _can_access_task(current_task, current_user):
+                yield f"data: {json.dumps({'status': 'error', 'error': '无权限访问该任务'}, ensure_ascii=False)}\n\n"
+                break
+            payload = _public_task_payload(current_task)
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if current_task.get('status') in ('done', 'error'):
                 break
             time.sleep(1)
     return Response(stream(), mimetype='text/event-stream',
@@ -1420,6 +1465,13 @@ def download(filename):
     path = (output_root / filename).resolve()
     if output_root not in path.parents:
         return jsonify({'error': '无权限访问该文件'}), 403
+    if not current_user.is_admin:
+        allowed = any(
+            _can_access_task(task, current_user) and _task_contains_download(task, filename)
+            for task in tasks.values()
+        )
+        if not allowed:
+            return jsonify({'error': '无权限访问该文件'}), 403
     if path.exists() and path.is_file():
         return send_file(str(path), as_attachment=True, download_name=path.name)
     return jsonify({'error': '文件不存在'}), 404
@@ -1478,8 +1530,6 @@ def admin_users():
         'last_login': _to_utc_iso(u.last_login),
         'template_count': len(u.templates),
         'has_api_key': u.has_api_key(),
-        'api_key_encrypted': u.api_key_encrypted[:100] + '...' if u.api_key_encrypted and len(u.api_key_encrypted) > 100 else u.api_key_encrypted,
-        'api_key_nonce': u.api_key_nonce
     } for u in users])
 
 
@@ -1693,7 +1743,11 @@ def admin_feedback_reply(feedback_id):
     row.status = status
     row.replied_at = datetime.utcnow()
     db.session.commit()
-    return jsonify({'success': True, 'message': '回复已保存'})
+    return jsonify({
+        'success': True,
+        'message': '回复已保存',
+        'feedback': row.to_dict()
+    })
 
 
 @app.route('/api/admin/feedback/<int:feedback_id>/status', methods=['PUT'])

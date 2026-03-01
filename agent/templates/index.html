@@ -1339,6 +1339,17 @@ function feedbackStatusLabel(status) {
   return '待处理';
 }
 
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+let feedbackRefreshTimer = null;
+
 async function loadMyFeedbacks() {
   const box = document.getElementById('feedbackHistory');
   if (!box) return;
@@ -1352,6 +1363,8 @@ async function loadMyFeedbacks() {
     }
     box.innerHTML = rows.map(row => {
       const status = row.status || 'pending';
+      const safeContent = escapeHtml(row.content || '');
+      const safeReply = escapeHtml(row.admin_reply || '');
       const images = (row.image_paths || []).map((p, idx) =>
         `<a href="/api/feedback/image?path=${encodeURIComponent(p)}" target="_blank" title="查看图片${idx + 1}">
           <img class="feedback-thumb" src="/api/feedback/image?path=${encodeURIComponent(p)}" alt="反馈图片${idx + 1}">
@@ -1363,9 +1376,9 @@ async function loadMyFeedbacks() {
           ${new Date(row.created_at).toLocaleString('zh-CN')}
           <span class="feedback-status ${status}">${feedbackStatusLabel(status)}</span>
         </div>
-        <div style="font-size:13px;white-space:pre-wrap;">${row.content}</div>
+        <div style="font-size:13px;white-space:pre-wrap;">${safeContent}</div>
         ${images ? `<div class="feedback-image-grid">${images}</div>` : ''}
-        ${row.admin_reply ? `<div style="margin-top:8px;padding:8px;border-radius:6px;background:#f8fafc;font-size:12px;"><b>管理员回复：</b>${row.admin_reply}</div>` : ''}
+        ${row.admin_reply ? `<div style="margin-top:8px;padding:8px;border-radius:6px;background:#f8fafc;font-size:12px;"><b>管理员回复：</b>${safeReply}</div>` : ''}
       </div>`;
     }).join('');
   } catch (e) {
@@ -1378,12 +1391,20 @@ function showFeedbackModal() {
   if (!modal) return;
   modal.classList.add('active');
   loadMyFeedbacks();
+  if (feedbackRefreshTimer) {
+    clearInterval(feedbackRefreshTimer);
+  }
+  feedbackRefreshTimer = setInterval(loadMyFeedbacks, 15000);
 }
 
 function closeFeedbackModal() {
   const modal = document.getElementById('feedbackModal');
   if (!modal) return;
   modal.classList.remove('active');
+  if (feedbackRefreshTimer) {
+    clearInterval(feedbackRefreshTimer);
+    feedbackRefreshTimer = null;
+  }
 }
 
 function showSponsorModal() {

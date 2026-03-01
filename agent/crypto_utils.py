@@ -10,14 +10,17 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 def get_encryption_key():
-    """获取加密密钥，优先从环境变量读取，否则使用默认密钥"""
+    """获取加密密钥（必须由环境变量提供）。"""
     key = os.environ.get('API_KEY_ENCRYPTION_KEY')
-    if key:
-        # 从环境变量读取的密钥应该是 base64 编码的 32 字节密钥
-        return base64.b64decode(key)
-    # 默认密钥（仅用于开发，生产环境应设置环境变量）
-    # 32 字节密钥用于 AES-256
-    return b'physics-report-generator-key-32b'
+    if not key:
+        raise RuntimeError('API_KEY_ENCRYPTION_KEY environment variable is required')
+    try:
+        decoded = base64.b64decode(key)
+    except Exception as exc:
+        raise RuntimeError('API_KEY_ENCRYPTION_KEY must be valid base64') from exc
+    if len(decoded) != 32:
+        raise RuntimeError('API_KEY_ENCRYPTION_KEY must decode to 32 bytes')
+    return decoded
 
 
 def encrypt_api_key(plaintext: str) -> tuple[str, str]:

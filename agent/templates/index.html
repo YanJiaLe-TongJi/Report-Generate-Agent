@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物理实验报告生成器</title>
+<link rel="icon" href="/favicon.ico?v=2">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f5f7;--card:#fff;--border:#e2e8f0;
+  --text:#1e293b;--text2:#64748b;--text3:#94a3b8;
+  --primary:#2563eb;--primary-hover:#1d4ed8;
+  --success:#16a34a;--error:#dc2626;--amber:#d97706;
+  --radius:10px;--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh}
+.container{max-width:860px;margin:0 auto;padding:40px 20px 80px}
+h1{font-size:24px;font-weight:600;margin-bottom:6px}
+.subtitle{color:var(--text2);font-size:14px;margin-bottom:32px}
+.card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;margin-bottom:20px}
+.card-title{font-size:13px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:500;color:var(--text2);margin-bottom:6px}
+input[type=text],input[type=password],input[type=date],select{
+  width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+  font-size:14px;outline:none;transition:border-color .2s;background:#fff;color:var(--text)
+}
+input:focus,select:focus,textarea:focus{border-color:var(--primary)}
+.row{display:flex;gap:12px;margin-bottom:12px}
+.row>*{flex:1}
+.row-3>*{flex:1}
+.upload-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.upload-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);padding:20px 12px;
+  text-align:center;cursor:pointer;transition:all .2s;position:relative;min-height:120px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+}
+.upload-zone:hover,.upload-zone.drag-over{border-color:var(--primary);background:#f0f5ff}
+.upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.upload-icon{font-size:24px;color:var(--text3);margin-bottom:6px}
+.upload-label{font-size:14px;font-weight:500;color:var(--text)}
+.upload-hint{font-size:11px;color:var(--text3);margin-top:3px}
+.upload-zone.example-zone{border-color:var(--amber);border-style:dashed}
+.upload-zone.example-zone:hover,.upload-zone.example-zone.drag-over{border-color:var(--amber);background:#fffbeb}
+.file-list{margin-top:8px;text-align:left}
+.file-item{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:5px 8px;background:var(--bg);border-radius:6px;margin-top:3px;font-size:12px;
+}
+.file-item .name{color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .remove{
+  color:var(--text3);cursor:pointer;padding:2px 6px;border:none;background:none;font-size:14px;
+  line-height:1;border-radius:4px;
+}
+.file-item .remove:hover{background:var(--border);color:var(--error)}
+.prompt-toggle{
+  display:flex;align-items:center;justify-content:space-between;cursor:pointer;
+  padding:10px 0;border:none;background:none;width:100%;font-size:14px;
+  font-weight:500;color:var(--text);
+}
+.prompt-toggle .arrow{transition:transform .2s;color:var(--text3)}
+.prompt-toggle .arrow.open{transform:rotate(180deg)}
+textarea{
+  width:100%;min-height:120px;padding:12px;border:1px solid var(--border);border-radius:8px;
+  font-size:13px;font-family:inherit;resize:vertical;outline:none;line-height:1.6;
+  transition:border-color .2s;color:var(--text)
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:12px 32px;border:none;border-radius:8px;font-size:15px;font-weight:500;
+  cursor:pointer;transition:all .2s;text-decoration:none;
+}
+.btn-primary{background:var(--primary);color:#fff;width:100%}
+.btn-primary:hover:not(:disabled){background:var(--primary-hover)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-success{background:var(--success);color:#fff}
+.btn-success:hover{opacity:.9}
+.btn-outline{background:none;border:1px solid var(--border);color:var(--text)}
+.btn-outline:hover{background:var(--bg)}
+.progress-area{display:none}
+.progress-area.active{display:block}
+.progress-bar-wrap{background:var(--bg);border-radius:20px;height:6px;overflow:hidden;margin:12px 0}
+.progress-bar{height:100%;background:var(--primary);border-radius:20px;transition:width .3s;width:0}
+.progress-step{font-size:13px;color:var(--text2)}
+.step-log{max-height:150px;overflow-y:auto;margin-top:8px}
+.step-log div{font-size:12px;color:var(--text3);padding:2px 0}
+.step-log div:last-child{color:var(--text2);font-weight:500}
+.result-area{display:none;text-align:center;padding:20px 0}
+.result-area.active{display:block}
+.result-area .msg{font-size:15px;margin-bottom:16px;color:var(--success);font-weight:500}
+.result-area .error-msg{color:var(--error)}
+.download-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.config-row{margin-bottom:12px}
+.hint{font-size:11px;color:var(--amber);margin-top:4px;margin-bottom:12px}
+
+/* Modal Styles */
+.modal {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.modal.active {
+  display: flex;
+  opacity: 1;
+}
+.modal-content {
+  background: #fff;
+  border-radius: 12px;
+  max-width: 700px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transform: scale(0.95);
+  transition: transform 0.2s;
+}
+.modal.active .modal-content {
+  transform: scale(1);
+}
+.modal-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.modal-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+.modal-header p {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 4px;
+}
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  background: #f8fafc;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+}
+.modal-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+.modal-checkbox input {
+  margin: 0;
+}
+.modal-buttons {
+  display: flex;
+  gap: 10px;
+}
+.btn-modal {
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-modal-outline {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: var(--text);
+}
+.btn-modal-outline:hover {
+  background: var(--bg);
+}
+.btn-modal-primary {
+  background: #16a34a;
+  color: #fff;
+  border: none;
+}
+.btn-modal-primary:hover {
+  opacity: 0.9;
+}
+.feedback-item{
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px;
+  margin-bottom:8px;
+  background:#fff;
+}
+.feedback-meta{
+  font-size:12px;
+  color:var(--text2);
+  margin-bottom:6px;
+}
+.feedback-status{
+  display:inline-block;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:11px;
+  margin-left:6px;
+  background:#f1f5f9;
+  color:#475569;
+}
+.feedback-status.replied{background:#dcfce7;color:#166534}
+.feedback-status.pending{background:#fef3c7;color:#92400e}
+.feedback-status.closed{background:#e2e8f0;color:#334155}
+.feedback-image-grid{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:8px;
+}
+.feedback-thumb{
+  width:88px;
+  height:88px;
+  object-fit:cover;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:#f8fafc;
+}
+.announcement-meta{font-size:12px;color:var(--text2);margin-top:4px}
+.announcement-history-list{
+  border:1px solid var(--border);
+  border-radius:8px;
+  max-height:260px;
+  overflow:auto;
+  background:#fff;
+  margin-bottom:12px;
+}
+.announcement-history-item{
+  padding:10px 12px;
+  border-bottom:1px solid var(--border);
+  cursor:pointer;
+  font-size:13px;
+}
+.announcement-history-item:last-child{border-bottom:none}
+.announcement-history-item:hover{background:#f8fafc}
+.announcement-history-item.active{background:#e8f0ff}
+.announcement-history-title{font-weight:600;color:var(--text);margin-bottom:2px}
+.announcement-history-time{font-size:11px;color:var(--text3)}
+.announcement-tag{
+  display:inline-block;
+  padding:1px 6px;
+  border-radius:999px;
+  font-size:10px;
+  margin-left:6px;
+  background:#dbeafe;
+  color:#1d4ed8;
+}
+.sponsor-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+}
+.sponsor-card{
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:#fff;
+  padding:12px;
+}
+.sponsor-title{
+  font-size:13px;
+  font-weight:600;
+  color:var(--text);
+  margin-bottom:8px;
+}
+.sponsor-account{
+  font-size:12px;
+  color:var(--text2);
+  word-break:break-all;
+}
+.sponsor-note{
+  margin-top:8px;
+  font-size:12px;
+  color:var(--text3);
+}
+
+@media(max-width:640px){
+  .row{flex-direction:column}
+  .upload-grid{grid-template-columns:1fr}
+  .container{padding:20px 12px 60px}
+  .modal-content{width:95%}
+  .sponsor-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div id="sponsorConfig"
+     data-wechat="{{ sponsor_wechat or '' }}"
+     data-alipay="{{ sponsor_alipay or '' }}"
+     data-wechat-qr-enabled="{{ '1' if sponsor_wechat_qr_enabled else '0' }}"
+     data-alipay-qr-enabled="{{ '1' if sponsor_alipay_qr_enabled else '0' }}"
+     style="display:none;"></div>
+<!-- Header -->
+<div class="header" style="background:#fff;border-bottom:1px solid var(--border);padding:12px 0;margin-bottom:20px;">
+  <div class="container" style="max-width:860px;margin:0 auto;padding:0 20px;display:flex;justify-content:space-between;align-items:center;">
+    <div style="display:flex;align-items:center;gap:16px;">
+      <span style="font-size:16px;font-weight:600;color:var(--text);">物理实验报告生成器</span>
+      <a href="#" onclick="showWelcomeModal(); return false;" style="color:var(--primary);font-size:13px;text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <span>&#128196;</span> 查看使用文档
+      </a>
+      <a href="#" onclick="showFeedbackModal(); return false;" style="color:var(--primary);font-size:13px;text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <span>&#128172;</span> 问题反馈
+      </a>
+      <a href="#" onclick="showAnnouncementHistoryModal(); return false;" style="color:var(--primary);font-size:13px;text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <span>&#128227;</span> 历史公告
+      </a>
+      <a href="#" onclick="showSponsorModal(); return false;" style="color:#0f766e;font-size:13px;text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <span>&#128154;</span> 赞助支持
+      </a>
+      {% if current_user and current_user.is_admin %}
+      <a href="/admin" style="color:var(--success);font-size:13px;text-decoration:none;display:flex;align-items:center;gap:4px;">
+        <span>&#128295;</span> 管理员后台
+      </a>
+      {% endif %}
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;font-size:13px;">
+      <span style="color:var(--text2);">{{ current_user.email if current_user else 'guest@example.com' }}</span>
+      <a href="/logout" style="color:var(--error);text-decoration:none;">退出</a>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <h1>物理实验报告生成器</h1>
+  <p class="subtitle">基于 Kimi API · LaTeX/Word 双格式 · 自动公式渲染 · 支持参考样例</p>
+
+  <!-- API Config -->
+  <div class="card">
+    <div class="card-title">API 配置</div>
+    <div class="row">
+      <div style="flex:2">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <label for="apiKey">Moonshot API Key</label>
+          <button class="btn btn-sm btn-success" onclick="saveApiKey()" style="padding:4px 10px;font-size:12px;">保存到账户</button>
+        </div>
+        <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" value="{{ user_api_key or '' }}">
+      </div>
+      <div style="flex:1">
+        <label for="baseUrl">API 地址</label>
+        <select id="baseUrl">
+          <option value="https://api.moonshot.cn/v1" selected>api.moonshot.cn（国内）</option>
+          <option value="https://api.moonshot.ai/v1">api.moonshot.ai（国际）</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="visionModel">Vision 模型</label>
+        <select id="visionModel">
+          <option value="moonshot-v1-8k-vision-preview">moonshot-v1-8k-vision-preview</option>
+          <option value="moonshot-v1-32k-vision-preview" selected>moonshot-v1-32k-vision-preview</option>
+          <option value="moonshot-v1-128k-vision-preview">moonshot-v1-128k-vision-preview</option>
+        </select>
+      </div>
+      <div>
+        <label for="textModel">文本生成模型</label>
+        <select id="textModel">
+          <option value="kimi-k2.5" selected>kimi-k2.5</option>
+          <option value="moonshot-v1-32k">moonshot-v1-32k</option>
+          <option value="moonshot-v1-128k">moonshot-v1-128k</option>
+          <option value="moonshot-v1-auto">moonshot-v1-auto</option>
+        </select>
+      </div>
+      <div>
+        <label for="outputFormat">输出格式</label>
+        <select id="outputFormat">
+          <option value="latex" selected>PDF (LaTeX 编译)</option>
+          <option value="word">Word (.docx)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- System Experiment Materials -->
+  <div class="card">
+    <div class="card-title">系统实验资料（可选）</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:flex-start;">
+      <div>
+        <label for="systemCategory">选择实验大类</label>
+        <select id="systemCategory" onchange="onSystemCategoryChange()" style="margin-bottom:8px;">
+          <option value="">-- 不使用系统资料（自行上传） --</option>
+        </select>
+        <label for="systemExperiment">选择具体实验</label>
+        <select id="systemExperiment" onchange="onSystemExpChange()" style="margin-bottom:8px;" disabled>
+          <option value="">-- 请先选择实验大类 --</option>
+        </select>
+        <div class="hint" style="margin:0;">如果管理员已上传该实验的系统资料，可直接选择使用，无需自己上传实验资料图片。</div>
+      </div>
+      <div id="systemExpInfo" style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#f8fafc;">
+        <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;">资料信息</div>
+        <div style="font-size:12px;color:var(--text2);">请选择系统实验资料或自行上传</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reference Examples (单独区域) -->
+  <div class="card">
+    <div class="card-title">参考样例（可选）</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div>
+        <div class="upload-zone example-zone" id="dropExamples" style="min-height:100px;">
+          <input type="file" multiple accept=".docx,.doc,.pdf" id="inputExamples">
+          <div class="upload-icon">&#11088;</div>
+          <div class="upload-label">上传参考样例</div>
+          <div class="upload-hint">.docx / .doc / .pdf，支持多选</div>
+        </div>
+        <div class="file-list" id="listExamples"></div>
+      </div>
+      <div class="saved-templates" style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:#fafafa;">
+        <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:8px;">已保存的样例（点击切换选择，默认全选）</div>
+        <div id="savedExamplesList">
+          {% if user_examples and user_examples|length > 0 %}
+            {% for example in user_examples %}
+              <div class="saved-template-item" data-id="{{ example.id }}" data-name="{{ example.name|e }}" onclick="toggleExampleFromElement(this)" style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff;border-radius:4px;margin-bottom:4px;font-size:12px;cursor:pointer;">
+                <span>{{ example.name }}</span>
+                <span id="example-check-{{ example.id }}" style="display:none;color:var(--success);">&#10003;</span>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="saved-templates-empty" style="font-size:12px;color:var(--text3);text-align:center;padding:16px 0;">暂无已保存样例</div>
+          {% endif %}
+        </div>
+        <div style="margin-top:8px;margin-bottom:0;font-size:11px;color:var(--amber);">提示：点击已保存样例可切换选择状态</div>
+        <input type="hidden" id="selectedExampleIds" value="[]">
+      </div>
+    </div>
+    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：上传已完成的实验报告作为参考样例，AI会学习其写作风格。新上传的样例会自动保存到账户。</div>
+  </div>
+
+  <!-- Cover Info -->
+  <div class="card">
+    <div class="card-title">封面信息</div>
+    <div class="row">
+      <div style="flex:2">
+        <label for="coverExpName">实验名称</label>
+        <input type="text" id="coverExpName" placeholder="如：杨氏模量测定">
+      </div>
+      <div style="flex:1">
+        <label for="coverExpDate">实验日期</label>
+        <input type="date" id="coverExpDate">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="coverStudentName">学生姓名</label>
+        <input type="text" id="coverStudentName" placeholder="姓名">
+      </div>
+      <div>
+        <label for="coverStudentId">学号</label>
+        <input type="text" id="coverStudentId" placeholder="学号">
+      </div>
+      <div>
+        <label for="coverGroupNumber">组号</label>
+        <input type="text" id="coverGroupNumber" placeholder="组号">
+      </div>
+    </div>
+  </div>
+
+  <!-- File Upload -->
+  <div class="card">
+    <div class="card-title">文件上传</div>
+    <div class="upload-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div>
+        <div class="upload-zone" id="dropMaterials">
+          <input type="file" multiple accept="image/*" id="inputMaterials">
+          <div class="upload-icon">&#128196;</div>
+          <div class="upload-label">实验资料</div>
+          <div class="upload-hint">JPG / PNG，支持多张</div>
+        </div>
+        <div class="file-list" id="listMaterials"></div>
+      </div>
+      <div>
+        <div class="upload-zone" id="dropData">
+          <input type="file" multiple accept=".xlsx,.xls,.csv" id="inputData">
+          <div class="upload-icon">&#128202;</div>
+          <div class="upload-label">实验数据</div>
+          <div class="upload-hint">Excel (.xlsx)</div>
+        </div>
+        <div class="file-list" id="listData"></div>
+      </div>
+      <div>
+        <div class="upload-zone" id="dropRawData">
+          <input type="file" accept="image/*" id="inputRawData">
+          <div class="upload-icon">&#128221;</div>
+          <div class="upload-label">原始数据记录单</div>
+          <div class="upload-hint">JPG / PNG，单张</div>
+        </div>
+        <div class="file-list" id="listRawData"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：实验数据用于AI计算，原始数据记录单用于展示。至少上传其中一个。</div>
+  </div>
+
+  <!-- System Prompt -->
+  <div class="card">
+    <button class="prompt-toggle" onclick="togglePrompt()">
+      <span>系统提示词</span>
+      <span class="arrow" id="promptArrow">&#9660;</span>
+    </button>
+    <div id="promptArea" style="display:none">
+      <textarea id="systemPrompt"></textarea>
+      <div style="margin-top:8px;text-align:right">
+        <button class="btn btn-outline" onclick="resetPrompt()" style="padding:6px 16px;font-size:13px">恢复默认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generate -->
+  <button class="btn btn-primary" id="btnGenerate" onclick="startGenerate()">生成报告</button>
+
+  <!-- Progress -->
+  <div class="card progress-area" id="progressArea">
+    <div class="card-title">生成进度</div>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar"></div></div>
+    <div class="progress-step" id="progressStep">准备中...</div>
+    <div class="step-log" id="stepLog"></div>
+  </div>
+
+  <!-- Result -->
+  <div class="card result-area" id="resultArea">
+    <div class="msg" id="resultMsg"></div>
+    <div class="download-btns" id="downloadBtns"></div>
+    <div id="reviseArea" style="display:none;margin-top:16px;text-align:left;">
+      <label for="revisionText">自然语言修订</label>
+      <textarea id="revisionText" style="min-height:90px;" placeholder="例如：讨论与分析里误差来源不够，请补充系统误差和随机误差，并将实验结论改为3条要点。"></textarea>
+      <div style="margin-top:8px;display:flex;justify-content:flex-end;">
+        <button class="btn btn-outline" id="reviseBtn" onclick="submitRevision()" style="padding:8px 14px;">应用修订并重新编译</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LATEX_PROMPT = `你是一个物理实验报告撰写助手。请根据提供的实验资料、数据和参考样例，撰写完整的物理实验报告,保持风格和排版的学术性。
+
+核心要求：
+1. 严格按照章节结构编写
+2. 实验目的、实验原理、实验内容、实验仪器部分请严格摘抄资料原文，不要省略或改写
+3. 如果资料中有“思考题/问答题/讨论题”，必须完整作答并写入“思考题”章节
+4. 数学公式使用标准LaTeX：行内用 \\(...\\)，独立公式用 \\[...\\] 或 equation 环境
+5. 表格使用 LaTeX tabular/table 环境，用 booktabs 的 \\toprule \\midrule \\bottomrule
+6. 在需要的地方插入图片，默认width=0.5/textwidth
+7. 数据处理部分必须写完整计算链路：数据表、公式与符号说明、代入过程、中间结果、最终结果（含单位和有效数字）
+8. 不要输出任何 Markdown 语法（不要用 **加粗**、不要用 |表格|、不要用 # 标题）
+9. 输出内容将直接插入 LaTeX 文档，请确保语法正确可编译
+10. 如果提供了参考样例，请严格参考其写作风格、详细程度和格式
+11. 当资料要求或用户明确要求展示数据趋势时，可插入数据图并在正文中解释图像结论`;
+
+const WORD_PROMPT = `你是一个物理实验报告撰写助手。请根据提供的实验资料、数据和参考样例，撰写完整的物理实验报告。
+
+核心要求：
+1. 严格按照章节结构编写
+2. 实验目的、实验原理、实验内容、实验仪器部分请严格摘抄资料原文，不要省略或改写
+3. 如果资料中有“思考题/问答题/讨论题”，必须完整作答并写入“思考题”章节
+4. 数学公式使用简单文本表示，如 "E = mc^2" 或 "σ = F/A"（不要使用 LaTeX 复杂语法）
+5. 表格使用简单文本格式，用制表符或空格对齐
+6. 如上传了原始数据记录单，插在末尾，并在正文需要部分插入图片
+7. 数据处理部分必须写完整计算链路：数据表、公式与符号说明、代入过程、中间结果、最终结果（含单位和有效数字）
+8. 不要输出任何 Markdown 语法（不要用 **加粗**、不要用 |表格|、不要用 # 标题）
+9. 输出内容将直接用于生成 Word 文档，请确保格式清晰可读
+10. 如果提供了参考样例，请严格参考其写作风格、详细程度和格式
+11. 当资料要求或用户明确要求展示数据趋势时，可插入数据图并在正文中解释图像结论`;
+
+let currentFormat = 'latex';
+const files = { materials: [], data: [], examples: [], rawData: null, systemExpId: null };
+let lastCompletedTaskId = null;
+let SYSTEM_EXPERIMENTS = [];
+let announcementHistory = [];
+const sponsorConfigEl = document.getElementById('sponsorConfig');
+const SPONSOR_WECHAT_ACCOUNT = sponsorConfigEl ? (sponsorConfigEl.dataset.wechat || '') : '';
+const SPONSOR_ALIPAY_ACCOUNT = sponsorConfigEl ? (sponsorConfigEl.dataset.alipay || '') : '';
+const SPONSOR_WECHAT_QR_ENABLED = sponsorConfigEl ? (sponsorConfigEl.dataset.wechatQrEnabled === '1') : false;
+const SPONSOR_ALIPAY_QR_ENABLED = sponsorConfigEl ? (sponsorConfigEl.dataset.alipayQrEnabled === '1') : false;
+
+async function loadSystemExperiments() {
+  try {
+    const res = await fetch('/api/system/materials');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      SYSTEM_EXPERIMENTS = data;
+    }
+  } catch (e) {
+    console.error('加载系统实验资料失败:', e);
+  }
+}
+
+// 系统实验选择变化处理
+function onSystemCategoryChange() {
+  const categorySelect = document.getElementById('systemCategory');
+  const experimentSelect = document.getElementById('systemExperiment');
+  const category = categorySelect.value;
+
+  files.systemExpId = null;
+  experimentSelect.innerHTML = '';
+  if (!category) {
+    experimentSelect.disabled = true;
+    experimentSelect.innerHTML = '<option value="">-- 请先选择实验大类 --</option>';
+    onSystemExpChange();
+    return;
+  }
+
+  const exps = SYSTEM_EXPERIMENTS.filter(exp => (exp.category || '未分类') === category);
+  experimentSelect.disabled = false;
+  experimentSelect.innerHTML = '<option value="">-- 请选择具体实验 --</option>' +
+    exps.map(exp => `<option value="${exp.id}">${exp.experiment_name}</option>`).join('');
+  onSystemExpChange();
+}
+
+function onSystemExpChange() {
+  const select = document.getElementById('systemExperiment');
+  const infoDiv = document.getElementById('systemExpInfo');
+  const category = document.getElementById('systemCategory').value;
+  const selectedOption = select.options[select.selectedIndex];
+
+  if (select.value) {
+    infoDiv.innerHTML = `
+      <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;">${category} / ${selectedOption.text}</div>
+      <div style="font-size:12px;color:var(--text2);">使用系统实验资料，无需自行上传图片</div>
+    `;
+    files.systemExpId = select.value;
+    // 禁用实验资料上传
+    const dropMaterials = document.getElementById('dropMaterials');
+    if (dropMaterials) {
+      dropMaterials.style.opacity = '0.5';
+      dropMaterials.style.pointerEvents = 'none';
+    }
+  } else {
+    infoDiv.innerHTML = `
+      <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;">资料信息</div>
+      <div style="font-size:12px;color:var(--text2);">请选择系统实验资料或自行上传</div>
+    `;
+    files.systemExpId = null;
+    // 启用实验资料上传
+    const dropMaterials = document.getElementById('dropMaterials');
+    if (dropMaterials) {
+      dropMaterials.style.opacity = '1';
+      dropMaterials.style.pointerEvents = 'auto';
+    }
+  }
+}
+
+function initSystemExperimentSelectors() {
+  const categorySelect = document.getElementById('systemCategory');
+  const categories = [...new Set(SYSTEM_EXPERIMENTS.map(exp => (exp.category || '未分类')))].sort();
+  categorySelect.innerHTML = '<option value="">-- 不使用系统资料（自行上传） --</option>' +
+    categories.map(cat => `<option value="${cat}">${cat}</option>`).join('');
+}
+
+function initSystemPrompt() {
+  const sp = document.getElementById('systemPrompt');
+  if (sp) sp.value = LATEX_PROMPT;
+}
+
+function resetPrompt() {
+  const format = document.getElementById('outputFormat').value;
+  document.getElementById('systemPrompt').value = format === 'word' ? WORD_PROMPT : LATEX_PROMPT;
+}
+
+function togglePrompt() {
+  const area = document.getElementById('promptArea');
+  const arrow = document.getElementById('promptArrow');
+  const v = area.style.display !== 'none';
+  area.style.display = v ? 'none' : 'block';
+  arrow.classList.toggle('open', !v);
+}
+
+function setupDrop(zoneId, inputId, key, multi) {
+  const zone = document.getElementById(zoneId);
+  const input = document.getElementById(inputId);
+  if (!zone || !input) {
+    console.warn(`[Setup] Zone or input not found: ${zoneId}, ${inputId}`);
+    return;
+  }
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    addFiles(key, e.dataTransfer.files, multi);
+  });
+  input.addEventListener('change', () => { addFiles(key, input.files, multi); input.value = ''; });
+}
+
+function addFiles(key, fl, multi) {
+  if (!multi) files[key] = [];
+  for (const f of fl) {
+    if (!multi) { files[key] = [f]; break; }
+    if (!files[key].some(x => x.name === f.name && x.size === f.size)) files[key].push(f);
+  }
+  renderFileList(key);
+
+  // 如果是参考样例，自动保存到用户账户
+  if (key === 'examples') {
+    for (const f of fl) {
+      saveExampleToAccount(f);
+    }
+  }
+}
+
+// 保存参考样例到用户账户
+function saveExampleToAccount(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch('/api/user/examples', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { console.error('[Example] 保存失败:', d.error); return; }
+      addSavedExampleToUI(d.id, d.name);
+    })
+    .catch(e => console.error('[Example] 上传失败:', e));
+}
+
+// 将新保存的样例添加到UI并自动选中
+function addSavedExampleToUI(id, name) {
+  const container = document.getElementById('savedExamplesList');
+  const existing = container.querySelector(`[data-id="${id}"]`);
+  if (existing) return;
+  const emptyMsg = container.querySelector('.saved-templates-empty');
+  if (emptyMsg) emptyMsg.remove();
+  const div = document.createElement('div');
+  div.className = 'saved-template-item';
+  div.setAttribute('data-id', id);
+  div.onclick = () => toggleExample(id, name);
+  div.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff;border-radius:4px;margin-bottom:4px;font-size:12px;cursor:pointer;';
+  div.innerHTML = `<span>${name}</span><span id="example-check-${id}" style="display:none;color:var(--success);">&#10003;</span>`;
+  container.appendChild(div);
+  toggleExample(id, name);
+}
+
+function toggleExampleFromElement(el) {
+  const id = el.getAttribute('data-id');
+  const name = el.getAttribute('data-name') || '';
+  toggleExample(id, name);
+}
+
+// 切换已保存参考样例的选择状态（支持多选）
+function toggleExample(id, name) {
+  const input = document.getElementById('selectedExampleIds');
+  const check = document.getElementById('example-check-' + id);
+  let selectedIds = JSON.parse(input.value || '[]');
+  const idStr = String(id);
+  if (selectedIds.includes(idStr)) {
+    selectedIds = selectedIds.filter(i => i !== idStr);
+    check.style.display = 'none';
+    const item = check.closest('.saved-template-item');
+    item.style.background = '#fff';
+    item.style.color = 'var(--text)';
+  } else {
+    selectedIds.push(idStr);
+    check.style.display = 'inline';
+    const item = check.closest('.saved-template-item');
+    item.style.background = 'var(--primary)';
+    item.style.color = '#fff';
+  }
+  input.value = JSON.stringify(selectedIds);
+}
+
+// 全选所有参考样例
+function selectAllExamples() {
+  const input = document.getElementById('selectedExampleIds');
+  const allItems = document.querySelectorAll('.saved-template-item');
+  const selectedIds = [];
+  allItems.forEach(item => {
+    const id = item.getAttribute('data-id');
+    const check = document.getElementById('example-check-' + id);
+    if (id) {
+      selectedIds.push(String(id));
+      check.style.display = 'inline';
+      item.style.background = 'var(--primary)';
+      item.style.color = '#fff';
+    }
+  });
+  input.value = JSON.stringify(selectedIds);
+}
+
+function removeFile(key, i) { files[key].splice(i, 1); renderFileList(key); }
+
+function renderFileList(key) {
+  const id = 'list' + key.charAt(0).toUpperCase() + key.slice(1);
+  const el = document.getElementById(id);
+  if (!files[key].length) { el.innerHTML = ''; return; }
+  el.innerHTML = files[key].map((f, i) =>
+    `<div class="file-item"><span class="name">${f.name}</span><button class="remove" onclick="removeFile('${key}',${i})">&times;</button></div>`
+  ).join('');
+}
+
+// 初始化所有拖拽上传区域
+function initUploadZones() {
+  setupDrop('dropMaterials', 'inputMaterials', 'materials', true);
+  setupDrop('dropData', 'inputData', 'data', true);
+  setupDrop('dropExamples', 'inputExamples', 'examples', true);
+
+  // 原始数据记录单（单文件）
+  const rawDataZone = document.getElementById('dropRawData');
+  const rawDataInput = document.getElementById('inputRawData');
+  if (rawDataZone && rawDataInput) {
+    rawDataZone.addEventListener('dragover', e => { e.preventDefault(); rawDataZone.classList.add('drag-over'); });
+    rawDataZone.addEventListener('dragleave', () => rawDataZone.classList.remove('drag-over'));
+    rawDataZone.addEventListener('drop', e => {
+      e.preventDefault(); rawDataZone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length > 0) {
+        files.rawData = e.dataTransfer.files[0];
+        renderRawDataFile();
+      }
+    });
+    rawDataInput.addEventListener('change', () => {
+      if (rawDataInput.files.length > 0) {
+        files.rawData = rawDataInput.files[0];
+        renderRawDataFile();
+      }
+      rawDataInput.value = '';
+    });
+  }
+}
+
+function renderRawDataFile() {
+  const el = document.getElementById('listRawData');
+  if (!files.rawData) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="file-item"><span class="name">${files.rawData.name}</span><button class="remove" onclick="removeRawData()">&times;</button></div>`;
+}
+
+function removeRawData() {
+  files.rawData = null;
+  renderRawDataFile();
+}
+
+function saveApiKey() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) { alert('请输入 API Key'); return; }
+  fetch('/api/user/apikey', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.error) { alert('保存失败: ' + d.error); return; }
+    alert('API Key 已保存到账户');
+  })
+  .catch(e => alert('保存失败: ' + e.message));
+}
+
+function startGenerate() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) { alert('请输入 API Key'); return; }
+  // 验证：实验资料 或 系统实验至少一个；实验数据 或 原始数据记录单 至少一个
+  if (!files.materials.length && !files.systemExpId) {
+    alert('请上传实验资料或选择系统实验');
+    return;
+  }
+  if (!files.data.length && !files.rawData) {
+    alert('请上传实验数据或原始数据记录单（至少一个）');
+    return;
+  }
+
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = true; btn.textContent = '生成中...';
+
+  const pa = document.getElementById('progressArea');
+  const ra = document.getElementById('resultArea');
+  pa.classList.add('active'); ra.classList.remove('active');
+  document.getElementById('stepLog').innerHTML = '';
+  document.getElementById('progressBar').style.width = '0%';
+
+  const fd = new FormData();
+  fd.append('api_key', apiKey);
+  fd.append('base_url', document.getElementById('baseUrl').value);
+  fd.append('system_prompt', document.getElementById('systemPrompt').value);
+  fd.append('vision_model', document.getElementById('visionModel').value);
+  fd.append('text_model', document.getElementById('textModel').value);
+  fd.append('output_format', document.getElementById('outputFormat').value);
+
+  fd.append('experiment_name', document.getElementById('coverExpName').value);
+  fd.append('student_name', document.getElementById('coverStudentName').value);
+  fd.append('student_id', document.getElementById('coverStudentId').value);
+  fd.append('group_number', document.getElementById('coverGroupNumber').value);
+  fd.append('experiment_date', document.getElementById('coverExpDate').value);
+
+  files.materials.forEach(f => fd.append('materials', f));
+  files.data.forEach(f => fd.append('data', f));
+  files.examples.forEach(f => fd.append('examples', f));
+  if (files.rawData) {
+    fd.append('raw_data', files.rawData);
+  }
+
+  // 添加系统实验ID
+  if (files.systemExpId) {
+    fd.append('system_material_id', files.systemExpId);
+  }
+
+  // 添加已保存的参考样例IDs（多选）
+  const selectedExampleIds = JSON.parse(document.getElementById('selectedExampleIds').value || '[]');
+  selectedExampleIds.forEach(id => fd.append('selected_example_ids', id));
+
+  fetch('/api/generate', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { showError(d.error); return; }
+      lastCompletedTaskId = d.task_id;
+      pollProgress(d.task_id);
+    })
+    .catch(e => showError(e.message));
+}
+
+function pollProgress(tid) {
+  const es = new EventSource(`/api/progress/${tid}`);
+  const log = document.getElementById('stepLog');
+  const bar = document.getElementById('progressBar');
+  const step = document.getElementById('progressStep');
+  let last = 0;
+
+  es.onmessage = e => {
+    const d = JSON.parse(e.data);
+    step.textContent = d.current_step || '';
+    if (d.steps && d.steps.length > last) {
+      for (let i = last; i < d.steps.length; i++) {
+        const div = document.createElement('div'); div.textContent = d.steps[i]; log.appendChild(div);
+      }
+      last = d.steps.length; log.scrollTop = log.scrollHeight;
+    }
+    const total = (files.materials.length || 1) + 12;
+    bar.style.width = Math.min((d.steps ? d.steps.length : 0) / total * 100, 100) + '%';
+
+    if (d.status === 'done') {
+      es.close(); bar.style.width = '100%';
+      showSuccess(d.download_url, d.raw_url, d.tex_url, tid);
+    } else if (d.status === 'error') {
+      es.close();
+      showError(d.error, d.download_url);
+    }
+  };
+  es.onerror = () => { es.close(); showError('连接中断'); };
+}
+
+function showSuccess(dl, raw, tex, taskId) {
+  document.getElementById('btnGenerate').disabled = false;
+  document.getElementById('btnGenerate').textContent = '生成报告';
+  if (taskId) {
+    lastCompletedTaskId = taskId;
+  }
+  const ra = document.getElementById('resultArea'); ra.classList.add('active');
+  document.getElementById('resultMsg').textContent = '报告生成完成！';
+  document.getElementById('resultMsg').className = 'msg';
+  const format = document.getElementById('outputFormat').value;
+  let b = '';
+  if (format === 'word') {
+    b = `<a href="${dl}" class="btn btn-success" download>下载 Word 报告</a>`;
+  } else {
+    b = `<a href="${dl}" class="btn btn-success" download>下载 PDF 报告</a>`;
+    if (tex) b += `<a href="${tex}" class="btn btn-outline" download>下载 .tex 源码</a>`;
+  }
+  if (raw) b += `<a href="${raw}" class="btn btn-outline" download>下载 Markdown</a>`;
+  document.getElementById('downloadBtns').innerHTML = b;
+  const reviseArea = document.getElementById('reviseArea');
+  if (reviseArea) reviseArea.style.display = 'block';
+}
+
+function showError(msg, fallbackUrl) {
+  document.getElementById('btnGenerate').disabled = false;
+  document.getElementById('btnGenerate').textContent = '生成报告';
+  const ra = document.getElementById('resultArea'); ra.classList.add('active');
+  const m = document.getElementById('resultMsg');
+  m.textContent = '生成失败: ' + msg; m.className = 'msg error-msg';
+  const format = document.getElementById('outputFormat').value;
+  let b = '<button class="btn btn-outline" onclick="startGenerate()">重试</button>';
+  if (fallbackUrl) {
+    if (format === 'word') {
+      b += `<a href="${fallbackUrl}" class="btn btn-outline" download>下载 Word 源文件</a>`;
+    } else {
+      b += `<a href="${fallbackUrl}" class="btn btn-outline" download>下载 .tex 源文件</a>`;
+    }
+  }
+  document.getElementById('downloadBtns').innerHTML = b;
+  const reviseArea = document.getElementById('reviseArea');
+  if (reviseArea) reviseArea.style.display = 'none';
+}
+
+function submitRevision() {
+  const revisionText = document.getElementById('revisionText');
+  const reviseBtn = document.getElementById('reviseBtn');
+  const instruction = (revisionText.value || '').trim();
+  if (!lastCompletedTaskId) {
+    alert('请先生成一份报告后再修订');
+    return;
+  }
+  if (!instruction) {
+    alert('请描述需要修正的问题');
+    revisionText.focus();
+    return;
+  }
+
+  reviseBtn.disabled = true;
+  reviseBtn.textContent = '修订中...';
+  fetch(`/api/revise/${lastCompletedTaskId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruction })
+  })
+    .then(async r => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '修订失败');
+      return d;
+    })
+    .then(d => {
+      alert('修订完成，已重新编译');
+      showSuccess(d.download_url, d.raw_url, d.tex_url, lastCompletedTaskId);
+      revisionText.value = '';
+    })
+    .catch(e => alert(e.message))
+    .finally(() => {
+      reviseBtn.disabled = false;
+      reviseBtn.textContent = '应用修订并重新编译';
+    });
+}
+
+function showWelcomeLater() {
+  document.getElementById('welcomeModal').classList.remove('active');
+  setTimeout(() => document.getElementById('welcomeModal').style.display = 'none', 200);
+}
+
+function formatAnnouncementTime(isoString) {
+  if (!isoString) return '-';
+  return new Date(isoString).toLocaleString('zh-CN');
+}
+
+function formatAnnouncementPeriod(item) {
+  const start = item.start_at ? formatAnnouncementTime(item.start_at) : '立即';
+  const end = item.end_at ? formatAnnouncementTime(item.end_at) : '长期有效';
+  return `${start} ~ ${end}`;
+}
+
+function openAnnouncementModal(announcement) {
+  if (!announcement) return;
+  const modal = document.getElementById('announcementModal');
+  if (!modal) return;
+  const titleEl = document.getElementById('announcementTitle');
+  const timeEl = document.getElementById('announcementTime');
+  const contentEl = document.getElementById('announcementContent');
+  if (titleEl) titleEl.textContent = announcement.title || '系统公告';
+  if (timeEl) {
+    timeEl.textContent = `发布时间：${formatAnnouncementTime(announcement.created_at)} · 生效期：${formatAnnouncementPeriod(announcement)}`;
+  }
+  if (contentEl) contentEl.innerHTML = renderMarkdown(announcement.content_md || '');
+  modal.classList.add('active');
+}
+
+function closeAnnouncementModal() {
+  const modal = document.getElementById('announcementModal');
+  const dontShow = document.getElementById('announcementDontShowAgain');
+  const currentId = modal ? modal.getAttribute('data-announcement-id') : null;
+  if (dontShow && dontShow.checked && currentId) {
+    sessionStorage.setItem('hideAnnouncementId', String(currentId));
+    try {
+      const raw = localStorage.getItem('hideAnnouncementIds');
+      const ids = raw ? JSON.parse(raw) : [];
+      const next = Array.isArray(ids) ? ids.map(String) : [];
+      if (!next.includes(String(currentId))) {
+        next.push(String(currentId));
+      }
+      localStorage.setItem('hideAnnouncementIds', JSON.stringify(next));
+    } catch (e) {}
+  }
+  if (modal) modal.classList.remove('active');
+}
+
+async function loadLatestAnnouncement(autoPopup) {
+  try {
+    const res = await fetch('/api/announcements/latest');
+    if (!res.ok) return;
+    const data = await res.json();
+    const announcement = data.announcement;
+    if (!announcement) return;
+    const modal = document.getElementById('announcementModal');
+    if (modal) modal.setAttribute('data-announcement-id', String(announcement.id));
+    if (autoPopup) {
+      const hiddenId = sessionStorage.getItem('hideAnnouncementId');
+      if (hiddenId && hiddenId === String(announcement.id)) {
+        return;
+      }
+      try {
+        const hiddenIds = JSON.parse(localStorage.getItem('hideAnnouncementIds') || '[]');
+        if (Array.isArray(hiddenIds) && hiddenIds.map(String).includes(String(announcement.id))) {
+          return;
+        }
+      } catch (e) {}
+      openAnnouncementModal(announcement);
+    }
+  } catch (e) {
+    console.error('加载最新公告失败:', e);
+  }
+}
+
+function renderAnnouncementHistory() {
+  const listEl = document.getElementById('announcementHistoryList');
+  const titleEl = document.getElementById('historyDetailTitle');
+  const timeEl = document.getElementById('historyDetailTime');
+  const contentEl = document.getElementById('announcementHistoryContent');
+  if (!listEl || !titleEl || !timeEl || !contentEl) return;
+
+  if (!Array.isArray(announcementHistory) || announcementHistory.length === 0) {
+    listEl.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text3);">暂无公告</div>';
+    titleEl.textContent = '暂无公告';
+    timeEl.textContent = '';
+    contentEl.innerHTML = '<p style="color:var(--text3);">管理员暂未发布公告。</p>';
+    return;
+  }
+
+  listEl.innerHTML = announcementHistory.map((item, idx) => `
+    <div class="announcement-history-item ${idx === 0 ? 'active' : ''}" data-id="${item.id}" onclick="selectAnnouncementHistory(${item.id})">
+      <div class="announcement-history-title">${item.title || '无标题公告'}${item.is_pinned ? '<span class="announcement-tag">置顶</span>' : ''}</div>
+      <div class="announcement-history-time">${formatAnnouncementTime(item.created_at)}</div>
+    </div>
+  `).join('');
+
+  const first = announcementHistory[0];
+  titleEl.textContent = first.title || '无标题公告';
+  timeEl.textContent = `发布时间：${formatAnnouncementTime(first.created_at)} · 生效期：${formatAnnouncementPeriod(first)}`;
+  contentEl.innerHTML = renderMarkdown(first.content_md || '');
+}
+
+function selectAnnouncementHistory(id) {
+  const selected = announcementHistory.find(x => x.id === id);
+  if (!selected) return;
+  document.querySelectorAll('.announcement-history-item').forEach(el => {
+    el.classList.toggle('active', Number(el.getAttribute('data-id')) === id);
+  });
+  const titleEl = document.getElementById('historyDetailTitle');
+  const timeEl = document.getElementById('historyDetailTime');
+  const contentEl = document.getElementById('announcementHistoryContent');
+  if (titleEl) titleEl.textContent = selected.title || '无标题公告';
+  if (timeEl) timeEl.textContent = `发布时间：${formatAnnouncementTime(selected.created_at)} · 生效期：${formatAnnouncementPeriod(selected)}`;
+  if (contentEl) contentEl.innerHTML = renderMarkdown(selected.content_md || '');
+}
+
+async function showAnnouncementHistoryModal() {
+  const modal = document.getElementById('announcementHistoryModal');
+  if (!modal) return;
+  try {
+    const res = await fetch('/api/announcements/history');
+    if (!res.ok) {
+      alert('加载公告历史失败');
+      return;
+    }
+    announcementHistory = await res.json();
+    renderAnnouncementHistory();
+    modal.classList.add('active');
+  } catch (e) {
+    alert('加载公告历史失败：' + e.message);
+  }
+}
+
+function closeAnnouncementHistoryModal() {
+  const modal = document.getElementById('announcementHistoryModal');
+  if (modal) modal.classList.remove('active');
+}
+
+// Safer Markdown renderer (headings/lists/code/link emphasis)
+function renderMarkdown(md) {
+  const src = String(md || '').replace(/\r\n?/g, '\n');
+  const esc = (s) => String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  // 先提取代码块，避免被行级规则打碎
+  const codeBlocks = [];
+  const withPlaceholders = src.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const token = `@@CODEBLOCK_${codeBlocks.length}@@`;
+    codeBlocks.push(code);
+    return token;
+  });
+
+  const inline = (raw) => {
+    let text = esc(raw);
+    text = text.replace(/`([^`]+)`/g, '<code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:12px;color:#2563eb;">$1</code>');
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong style="font-weight:600;">$1</strong>');
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none;border-bottom:1px solid #2563eb;">$1</a>');
+    return text;
+  };
+
+  const lines = withPlaceholders.split('\n');
+  const out = [];
+  let inUl = false;
+  let inOl = false;
+
+  const closeLists = () => {
+    if (inUl) {
+      out.push('</ul>');
+      inUl = false;
+    }
+    if (inOl) {
+      out.push('</ol>');
+      inOl = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      closeLists();
+      continue;
+    }
+
+    const codeMatch = trimmed.match(/^@@CODEBLOCK_(\d+)@@$/);
+    if (codeMatch) {
+      closeLists();
+      out.push(trimmed);
+      continue;
+    }
+
+    const h3 = trimmed.match(/^###\s+(.+)$/);
+    const h2 = trimmed.match(/^##\s+(.+)$/);
+    const h1 = trimmed.match(/^#\s+(.+)$/);
+    if (h3 || h2 || h1) {
+      closeLists();
+      if (h1) out.push(`<h1 style="font-size:20px;color:#2563eb;margin:20px 0 12px;">${inline(h1[1])}</h1>`);
+      if (h2) out.push(`<h2 style="font-size:17px;color:#1e293b;margin:16px 0 10px;font-weight:600;">${inline(h2[1])}</h2>`);
+      if (h3) out.push(`<h3 style="font-size:15px;color:#334155;margin:12px 0 8px;font-weight:600;">${inline(h3[1])}</h3>`);
+      continue;
+    }
+
+    if (/^([-*_]\s*){3,}$/.test(trimmed)) {
+      closeLists();
+      out.push('<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">');
+      continue;
+    }
+
+    const ul = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (ul) {
+      if (inOl) {
+        out.push('</ol>');
+        inOl = false;
+      }
+      if (!inUl) {
+        out.push('<ul style="margin:8px 0;padding-left:20px;">');
+        inUl = true;
+      }
+      out.push(`<li style="margin:4px 0;line-height:1.5;">${inline(ul[1])}</li>`);
+      continue;
+    }
+
+    const ol = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (ol) {
+      if (inUl) {
+        out.push('</ul>');
+        inUl = false;
+      }
+      if (!inOl) {
+        out.push('<ol style="margin:8px 0;padding-left:20px;">');
+        inOl = true;
+      }
+      out.push(`<li style="margin:4px 0;line-height:1.5;">${inline(ol[1])}</li>`);
+      continue;
+    }
+
+    closeLists();
+    out.push(`<p style="margin:8px 0;line-height:1.6;">${inline(trimmed)}</p>`);
+  }
+
+  closeLists();
+  let html = out.join('');
+
+  codeBlocks.forEach((code, i) => {
+    html = html.replace(
+      `@@CODEBLOCK_${i}@@`,
+      `<pre style="background:#1e293b;color:#f8fafc;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:10px 0;line-height:1.5;"><code>${esc(code)}</code></pre>`
+    );
+  });
+  return html;
+}
+
+// Show welcome modal with proper handling
+function showWelcomeModal() {
+  console.log('[Modal] Attempting to show welcome modal');
+  const modal = document.getElementById('welcomeModal');
+  const content = document.getElementById('welcomeContent');
+
+  if (!modal || !content) {
+    console.error('[Modal] Modal elements not found');
+    return;
+  }
+
+  // Fetch and render content
+  fetch('/welcome.md')
+    .then(r => {
+      if (!r.ok) throw new Error('Failed to fetch welcome.md');
+      return r.text();
+    })
+    .then(md => {
+      content.innerHTML = renderMarkdown(md);
+      // Show modal using CSS class
+      modal.classList.add('active');
+      console.log('[Modal] Welcome modal shown successfully');
+    })
+    .catch(e => {
+      console.error('[Modal] Error:', e);
+      content.innerHTML = '<p style="color:#dc2626;">加载文档失败，请刷新页面重试</p>';
+      modal.classList.add('active');
+    });
+}
+
+function closeWelcome() {
+  const modal = document.getElementById('welcomeModal');
+  const dontShow = document.getElementById('dontShowAgain');
+  if (dontShow && dontShow.checked) {
+    localStorage.setItem('hideWelcome', 'true');
+  }
+  if (modal) {
+    modal.classList.remove('active');
+  }
+}
+
+function feedbackStatusLabel(status) {
+  if (status === 'replied') return '已回复';
+  if (status === 'closed') return '已关闭';
+  return '待处理';
+}
+
+async function loadMyFeedbacks() {
+  const box = document.getElementById('feedbackHistory');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:12px;color:var(--text2);">加载中...</div>';
+  try {
+    const res = await fetch('/api/feedback/mine');
+    const rows = await res.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--text3);">暂无反馈记录</div>';
+      return;
+    }
+    box.innerHTML = rows.map(row => {
+      const status = row.status || 'pending';
+      const images = (row.image_paths || []).map((p, idx) =>
+        `<a href="/api/feedback/image?path=${encodeURIComponent(p)}" target="_blank" title="查看图片${idx + 1}">
+          <img class="feedback-thumb" src="/api/feedback/image?path=${encodeURIComponent(p)}" alt="反馈图片${idx + 1}">
+        </a>`
+      ).join('');
+      return `
+      <div class="feedback-item">
+        <div class="feedback-meta">
+          ${new Date(row.created_at).toLocaleString('zh-CN')}
+          <span class="feedback-status ${status}">${feedbackStatusLabel(status)}</span>
+        </div>
+        <div style="font-size:13px;white-space:pre-wrap;">${row.content}</div>
+        ${images ? `<div class="feedback-image-grid">${images}</div>` : ''}
+        ${row.admin_reply ? `<div style="margin-top:8px;padding:8px;border-radius:6px;background:#f8fafc;font-size:12px;"><b>管理员回复：</b>${row.admin_reply}</div>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = `<div style="font-size:12px;color:var(--error);">加载失败：${e.message}</div>`;
+  }
+}
+
+function showFeedbackModal() {
+  const modal = document.getElementById('feedbackModal');
+  if (!modal) return;
+  modal.classList.add('active');
+  loadMyFeedbacks();
+}
+
+function closeFeedbackModal() {
+  const modal = document.getElementById('feedbackModal');
+  if (!modal) return;
+  modal.classList.remove('active');
+}
+
+function showSponsorModal() {
+  const modal = document.getElementById('sponsorModal');
+  if (!modal) return;
+  modal.classList.add('active');
+}
+
+function closeSponsorModal() {
+  const modal = document.getElementById('sponsorModal');
+  if (!modal) return;
+  modal.classList.remove('active');
+}
+
+async function copySponsorAccount(type) {
+  const account = type === 'wechat' ? SPONSOR_WECHAT_ACCOUNT : SPONSOR_ALIPAY_ACCOUNT;
+  if (!account) {
+    alert('管理员暂未配置该收款账号');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(account);
+    alert('账号已复制，可前往对应 App 自定金额转账');
+  } catch (e) {
+    alert('复制失败，请手动复制：' + account);
+  }
+}
+
+async function submitFeedback() {
+  const contentEl = document.getElementById('feedbackText');
+  const imagesEl = document.getElementById('feedbackImages');
+  const btn = document.getElementById('feedbackSubmitBtn');
+  const content = (contentEl.value || '').trim();
+  if (!content) {
+    alert('请填写反馈内容');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('content', content);
+  const files = imagesEl.files || [];
+  for (let i = 0; i < files.length; i++) {
+    fd.append('images', files[i]);
+  }
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+  try {
+    const res = await fetch('/api/feedback', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '提交失败');
+      return;
+    }
+    alert('反馈已提交');
+    contentEl.value = '';
+    imagesEl.value = '';
+    renderFeedbackImagePreview();
+    loadMyFeedbacks();
+  } catch (e) {
+    alert('提交失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '提交反馈';
+  }
+}
+
+function renderFeedbackImagePreview() {
+  const imagesEl = document.getElementById('feedbackImages');
+  const preview = document.getElementById('feedbackImagePreview');
+  if (!imagesEl || !preview) return;
+  const selected = Array.from(imagesEl.files || []);
+  if (selected.length === 0) {
+    preview.innerHTML = '<div style="font-size:12px;color:var(--text3);">未选择图片</div>';
+    return;
+  }
+  preview.innerHTML = selected.map((file, idx) => {
+    const url = URL.createObjectURL(file);
+    return `<img class="feedback-thumb" src="${url}" alt="待上传图片${idx + 1}" title="${file.name}">`;
+  }).join('');
+}
+
+function showWelcomeLater() {
+  const modal = document.getElementById('welcomeModal');
+  if (modal) {
+    modal.classList.remove('active');
+  }
+}
+
+// Auto show welcome on first visit
+document.addEventListener('DOMContentLoaded', async function() {
+  console.log('[Init] DOMContentLoaded fired');
+
+  // 初始化系统提示词
+  initSystemPrompt();
+  await loadSystemExperiments();
+  initSystemExperimentSelectors();
+
+  // 初始化上传区域
+  initUploadZones();
+
+  // 监听输出格式切换，同步更新提示词
+  const outputFormat = document.getElementById('outputFormat');
+  if (outputFormat) {
+    outputFormat.addEventListener('change', function() {
+      const format = this.value;
+      currentFormat = format;
+      const currentPrompt = document.getElementById('systemPrompt').value;
+      if (currentPrompt === LATEX_PROMPT || currentPrompt === WORD_PROMPT) {
+        document.getElementById('systemPrompt').value = format === 'word' ? WORD_PROMPT : LATEX_PROMPT;
+      }
+    });
+  }
+
+  // 全选所有已保存样例
+  setTimeout(selectAllExamples, 200);
+
+  // 显示欢迎弹窗（延迟确保其他初始化完成）
+  if (!localStorage.getItem('hideWelcome')) {
+    setTimeout(showWelcomeModal, 800);
+  }
+
+  const feedbackImages = document.getElementById('feedbackImages');
+  if (feedbackImages) {
+    feedbackImages.addEventListener('change', renderFeedbackImagePreview);
+    renderFeedbackImagePreview();
+  }
+
+  loadLatestAnnouncement(true);
+});
+</script>
+
+<!-- Welcome Modal -->
+<div id="welcomeModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>欢迎使用物理实验报告生成器</h3>
+      <p>首次使用请阅读以下说明</p>
+    </div>
+    <div id="welcomeContent" class="modal-body"></div>
+    <div class="modal-footer">
+      <label class="modal-checkbox">
+        <input type="checkbox" id="dontShowAgain"> 下次不再显示
+      </label>
+      <div class="modal-buttons">
+        <button onclick="showWelcomeLater()" class="btn-modal btn-modal-outline">稍后再看</button>
+        <button onclick="closeWelcome()" class="btn-modal btn-modal-primary">我知道了</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Announcement Modal -->
+<div id="announcementModal" class="modal" data-announcement-id="">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="announcementTitle">系统公告</h3>
+      <p id="announcementTime" class="announcement-meta"></p>
+    </div>
+    <div id="announcementContent" class="modal-body"></div>
+    <div class="modal-footer">
+      <label class="modal-checkbox">
+        <input type="checkbox" id="announcementDontShowAgain"> 不再提示该公告
+      </label>
+      <div class="modal-buttons">
+        <button onclick="closeAnnouncementModal()" class="btn-modal btn-modal-primary">我知道了</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Announcement History Modal -->
+<div id="announcementHistoryModal" class="modal">
+  <div class="modal-content" style="max-width:760px;">
+    <div class="modal-header">
+      <h3>历史公告</h3>
+      <p>可查看管理员发布过的所有公告</p>
+    </div>
+    <div class="modal-body">
+      <div id="announcementHistoryList" class="announcement-history-list"></div>
+      <h4 id="historyDetailTitle" style="font-size:16px;margin-bottom:4px;">-</h4>
+      <p id="historyDetailTime" class="announcement-meta"></p>
+      <div id="announcementHistoryContent" style="margin-top:10px;"></div>
+    </div>
+    <div class="modal-footer">
+      <div></div>
+      <div class="modal-buttons">
+        <button onclick="closeAnnouncementHistoryModal()" class="btn-modal btn-modal-outline">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sponsor Modal -->
+<div id="sponsorModal" class="modal">
+  <div class="modal-content" style="max-width:760px;">
+    <div class="modal-header">
+      <h3>赞助支持</h3>
+      <p>自定金额赞助，用于支持网站服务器与域名开销</p>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:13px;color:var(--text2);margin-bottom:12px;">
+        感谢你的支持！可使用微信或支付宝，自行输入任意金额进行转账。
+      </div>
+      <div class="sponsor-grid">
+        <div class="sponsor-card">
+          <div class="sponsor-title">&#129505; 微信赞助</div>
+          {% if sponsor_wechat_qr_enabled %}
+          <a href="/api/sponsor/qr/wechat" target="_blank" title="点击查看大图">
+            <img src="/api/sponsor/qr/wechat" alt="微信赞助二维码" style="width:100%;max-height:320px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#f8fafc;">
+          </a>
+          <div class="sponsor-note">推荐使用微信扫一扫，金额可自定</div>
+          {% else %}
+          <div class="sponsor-account">收款账号：{{ sponsor_wechat or '未配置（请联系管理员）' }}</div>
+          <div class="sponsor-note">可在微信转账中粘贴账号/备注后完成赞助</div>
+          {% endif %}
+          <button class="btn-modal btn-modal-outline" style="margin-top:10px;" onclick="copySponsorAccount('wechat')">复制微信账号</button>
+        </div>
+        <div class="sponsor-card">
+          <div class="sponsor-title">&#128176; 支付宝赞助</div>
+          {% if sponsor_alipay_qr_enabled %}
+          <a href="/api/sponsor/qr/alipay" target="_blank" title="点击查看大图">
+            <img src="/api/sponsor/qr/alipay" alt="支付宝赞助二维码" style="width:100%;max-height:320px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#f8fafc;">
+          </a>
+          <div class="sponsor-note">推荐使用支付宝扫一扫，金额可自定</div>
+          {% else %}
+          <div class="sponsor-account">收款账号：{{ sponsor_alipay or '未配置（请联系管理员）' }}</div>
+          <div class="sponsor-note">可在支付宝转账中粘贴账号/备注后完成赞助</div>
+          {% endif %}
+          <button class="btn-modal btn-modal-outline" style="margin-top:10px;" onclick="copySponsorAccount('alipay')">复制支付宝账号</button>
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text3);">
+        提示：已配置二维码时优先展示二维码；若未配置则显示收款账号。
+      </div>
+    </div>
+    <div class="modal-footer">
+      <div></div>
+      <div class="modal-buttons">
+        <button onclick="closeSponsorModal()" class="btn-modal btn-modal-outline">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Feedback Modal -->
+<div id="feedbackModal" class="modal">
+  <div class="modal-content" style="max-width:760px;">
+    <div class="modal-header">
+      <h3>问题反馈</h3>
+      <p>提交文字与图片，管理员可在后台查看并回复</p>
+    </div>
+    <div class="modal-body">
+      <label for="feedbackText">反馈内容</label>
+      <textarea id="feedbackText" placeholder="请描述你遇到的问题、复现步骤、期望结果..." style="min-height:120px;"></textarea>
+      <label for="feedbackImages" style="margin-top:10px;">上传截图（可选，最多5张）</label>
+      <input id="feedbackImages" type="file" accept="image/*" multiple style="margin-bottom:10px;">
+      <div id="feedbackImagePreview" class="feedback-image-grid"></div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">历史反馈</div>
+      <div id="feedbackHistory"></div>
+    </div>
+    <div class="modal-footer">
+      <div></div>
+      <div class="modal-buttons">
+        <button onclick="closeFeedbackModal()" class="btn-modal btn-modal-outline">关闭</button>
+        <button id="feedbackSubmitBtn" onclick="submitFeedback()" class="btn-modal btn-modal-primary">提交反馈</button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

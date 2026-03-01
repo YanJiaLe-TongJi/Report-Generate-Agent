@@ -205,3 +205,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Extra local environment patterns
+.env.*
+*.pem
+*.key
+
+# Editor swap files
+*.swp
+*.swo
+
+# App generated files
+agent/uploads/
+agent/outputs/
+agent/build/
+agent/plots/
+
+# Misc logs/temp
+tmp/
+temp/

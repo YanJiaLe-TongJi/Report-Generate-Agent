@@ -922,14 +922,12 @@ function startGenerate() {
 }
 
 function pollProgress(tid) {
-  const es = new EventSource(`/api/progress/${tid}`);
   const log = document.getElementById('stepLog');
   const bar = document.getElementById('progressBar');
   const step = document.getElementById('progressStep');
   let last = 0;
 
-  es.onmessage = e => {
-    const d = JSON.parse(e.data);
+  function updateUI(d) {
     step.textContent = d.current_step || '';
     if (d.steps && d.steps.length > last) {
       for (let i = last; i < d.steps.length; i++) {
@@ -939,16 +937,36 @@ function pollProgress(tid) {
     }
     const total = (files.materials.length || 1) + 12;
     bar.style.width = Math.min((d.steps ? d.steps.length : 0) / total * 100, 100) + '%';
+  }
 
-    if (d.status === 'done') {
-      es.close(); bar.style.width = '100%';
-      showSuccess(d.download_url, d.raw_url, d.tex_url, tid);
-    } else if (d.status === 'error') {
-      es.close();
-      showError(d.error, d.download_url);
-    }
-  };
-  es.onerror = () => { es.close(); showError('连接中断'); };
+  function tick() {
+    if (timer === null) return;
+    fetch(`/api/progress/${tid}?json=1`, { credentials: 'same-origin' })
+      .then(r => {
+        if (!r.ok) throw new Error('获取进度失败');
+        return r.json();
+      })
+      .then(d => {
+        if (d.error) { timer = null; showError(d.error, d.download_url); return; }
+        updateUI(d);
+        if (d.status === 'done') {
+          timer = null;
+          bar.style.width = '100%';
+          showSuccess(d.download_url, d.raw_url, d.tex_url, tid);
+        } else if (d.status === 'error') {
+          timer = null;
+          showError(d.error, d.download_url);
+        } else {
+          timer = setTimeout(tick, 1500);
+        }
+      })
+      .catch(e => {
+        timer = null;
+        showError(e.message || '连接失败');
+      });
+  }
+
+  let timer = setTimeout(tick, 300);
 }
 
 function showSuccess(dl, raw, tex, taskId) {

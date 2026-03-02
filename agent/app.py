@@ -1430,12 +1430,16 @@ def revise_report(task_id):
 @app.route('/api/progress/<task_id>')
 @login_required
 def progress(task_id):
-    """获取任务进度（SSE 流）"""
+    """获取任务进度（支持 SSE 与 JSON 轮询）"""
     task = tasks.get(task_id)
     if not task:
         return jsonify({'error': '任务不存在'}), 404
     if not _can_access_task(task, current_user):
         return jsonify({'error': '无权限访问该任务'}), 403
+
+    # 轮询模式：返回单次 JSON，避免某些代理/网络环境下 SSE 被中断
+    if request.args.get('json') == '1':
+        return jsonify(_public_task_payload(task))
 
     def stream():
         while True:

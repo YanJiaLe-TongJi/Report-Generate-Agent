@@ -646,6 +646,74 @@ def _sanitize_section_content(content):
         tail = '\n'.join(f'\\end{{{env}}}' for env in reversed(stack))
         return text.rstrip() + '\n' + tail + '\n'
 
+    def _fix_tabular_alignment(text):
+        """
+        兜底修复常见 tabular 报错：
+        - Extra alignment tab has been changed to \\cr（列数不匹配）
+        仅在 tabular 环境内处理，不改动其他数学环境。
+        """
+        def _count_columns(spec):
+            s = (spec or '').replace('|', '')
+            cnt = 0
+            i = 0
+            while i < len(s):
+                ch = s[i]
+                if ch in ('c', 'l', 'r', 'X'):
+                    cnt += 1
+                    i += 1
+                    continue
+                if ch in ('p', 'm', 'b') and i + 1 < len(s) and s[i + 1] == '{':
+                    cnt += 1
+                    i += 2
+                    depth = 1
+                    while i < len(s) and depth > 0:
+                        if s[i] == '{':
+                            depth += 1
+                        elif s[i] == '}':
+                            depth -= 1
+                        i += 1
+                    continue
+                i += 1
+            return cnt
+
+        begin_pat = re.compile(r'\\begin\{tabular\}\{([^}]*)\}')
+        lines = text.splitlines()
+        out = []
+        in_tabular = False
+        expected_cols = 0
+
+        for ln in lines:
+            m = begin_pat.search(ln)
+            if m:
+                in_tabular = True
+                expected_cols = _count_columns(m.group(1))
+                out.append(ln)
+                continue
+            if in_tabular and r'\end{tabular}' in ln:
+                in_tabular = False
+                expected_cols = 0
+                out.append(ln)
+                continue
+
+            if in_tabular and expected_cols > 0:
+                stripped = ln.strip()
+                if (not stripped) or stripped.startswith('%') or (
+                    stripped.startswith('\\toprule') or stripped.startswith('\\midrule')
+                    or stripped.startswith('\\bottomrule') or stripped.startswith('\\hline')
+                ):
+                    out.append(ln)
+                    continue
+                if '&' in ln and r'\\' in ln:
+                    body, sep, tail = ln.partition(r'\\')
+                    cells = [c.strip() for c in body.split('&')]
+                    if len(cells) > expected_cols:
+                        cells = cells[:expected_cols]
+                    elif len(cells) < expected_cols:
+                        cells.extend([''] * (expected_cols - len(cells)))
+                    ln = ' & '.join(cells) + f' {sep}{tail}'
+            out.append(ln)
+        return '\n'.join(out)
+
     lines = []
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -663,6 +731,7 @@ def _sanitize_section_content(content):
     if _count_unescaped_dollar(cleaned) % 2 == 1:
         cleaned = _drop_last_unescaped_dollar(cleaned)
     cleaned = _balance_latex_environments(cleaned)
+    cleaned = _fix_tabular_alignment(cleaned)
     return cleaned.strip()
 
 

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>注册 - 物理实验报告生成器</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f5f7;--card:#fff;--border:#e2e8f0;
+  --text:#1e293b;--text2:#64748b;--text3:#94a3b8;
+  --primary:#2563eb;--primary-hover:#1d4ed8;
+  --success:#16a34a;--error:#dc2626;
+  --radius:10px;--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.container{width:100%;max-width:420px;padding:20px}
+.card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:32px}
+.logo{text-align:center;margin-bottom:24px}
+.logo h1{font-size:22px;font-weight:600;color:var(--primary)}
+.logo p{font-size:13px;color:var(--text2);margin-top:4px}
+h2{font-size:18px;font-weight:600;margin-bottom:20px;text-align:center}
+.form-group{margin-bottom:16px}
+label{display:block;font-size:13px;font-weight:500;color:var(--text2);margin-bottom:6px}
+input[type=email],input[type=password],input[type=text]{
+  width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+  font-size:14px;outline:none;transition:border-color .2s;background:#fff;color:var(--text)
+}
+input:focus{border-color:var(--primary)}
+.btn{
+  display:block;width:100%;padding:12px;border:none;border-radius:8px;font-size:15px;font-weight:500;
+  cursor:pointer;transition:all .2s;text-align:center;text-decoration:none;margin-top:20px;
+}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-outline{
+  background:none;border:1px solid var(--border);color:var(--text);
+  padding:10px 16px;font-size:13px;width:auto;white-space:nowrap;
+}
+.btn-outline:hover{background:var(--bg)}
+.btn-outline:disabled{opacity:.5;cursor:not-allowed;background:none}
+.btn-outline.sending{background:#f0f5ff;border-color:var(--primary);color:var(--primary)}
+.code-input-group{display:flex;gap:10px;align-items:stretch}
+.code-input-group input{flex:1}
+.code-input-group .btn{margin-top:0;align-self:stretch;display:flex;align-items:center;justify-content:center}
+.links{text-align:center;margin-top:16px;font-size:13px;color:var(--text2)}
+.links a{color:var(--primary);text-decoration:none}
+.links a:hover{text-decoration:underline}
+.error-message{background:#fef2f2;color:var(--error);padding:10px 12px;border-radius:6px;font-size:13px;margin-bottom:16px;border:1px solid #fecaca}
+.success-message{background:#f0fdf4;color:var(--success);padding:10px 12px;border-radius:6px;font-size:13px;margin-bottom:16px;border:1px solid #bbf7d0}
+.hint{font-size:12px;color:var(--text3);margin-top:4px}
+.requirement{font-size:12px;color:var(--text2);margin-top:4px}
+.requirement.met{color:var(--success)}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <div class="logo">
+      <h1>📚 物理实验报告生成器</h1>
+      <p>同济大学物理实验中心</p>
+    </div>
+
+    <h2>注册账号</h2>
+
+    {% if error %}
+    <div class="error-message">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('register') }}" id="registerForm">
+      <div class="form-group">
+        <label for="email">同济大学邮箱</label>
+        <input type="email" id="email" name="email" placeholder="yourname@tongji.edu.cn" required autofocus>
+        <div class="hint">必须使用 @tongji.edu.cn 邮箱注册</div>
+      </div>
+
+      <div class="form-group">
+        <label for="verification_code">验证码</label>
+        <div class="code-input-group">
+          <input type="text" id="verification_code" name="verification_code" placeholder="6位数字验证码" required maxlength="6" pattern="[0-9]{6}">
+          <button type="button" class="btn btn-outline" id="sendCodeBtn">获取验证码</button>
+        </div>
+        <div class="hint" id="codeHint">点击获取验证码，将发送至您的邮箱</div>
+      </div>
+
+      <div class="form-group">
+        <label for="password">密码</label>
+        <input type="password" id="password" name="password" placeholder="设置登录密码" required minlength="6">
+        <div class="requirement" id="pwdLength">密码长度至少6位</div>
+      </div>
+
+      <div class="form-group">
+        <label for="password_confirm">确认密码</label>
+        <input type="password" id="password_confirm" name="password_confirm" placeholder="再次输入密码" required>
+        <div class="requirement" id="pwdMatch">两次输入的密码需要一致</div>
+      </div>
+
+      <button type="submit" class="btn btn-primary" id="submitBtn">注册</button>
+    </form>
+
+    <div class="links">
+      已有账号？ <a href="{{ url_for('login') }}">立即登录</a>
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('registerForm').addEventListener('submit', function(e) {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const confirm = document.getElementById('password_confirm').value;
+  const code = document.getElementById('verification_code').value.trim();
+
+  // Validate tongji.edu.cn email
+  if (!email.endsWith('@tongji.edu.cn')) {
+    e.preventDefault();
+    alert('仅接受同济大学邮箱(@tongji.edu.cn)注册');
+    return false;
+  }
+
+  // Validate verification code
+  if (!/^\d{6}$/.test(code)) {
+    e.preventDefault();
+    alert('请输入6位数字验证码');
+    return false;
+  }
+
+  // Validate password length
+  if (password.length < 6) {
+    e.preventDefault();
+    alert('密码长度至少6位');
+    return false;
+  }
+
+  // Validate password match
+  if (password !== confirm) {
+    e.preventDefault();
+    alert('两次输入的密码不一致');
+    return false;
+  }
+
+  return true;
+});
+
+// Send verification code
+const sendBtn = document.getElementById('sendCodeBtn');
+const codeHint = document.getElementById('codeHint');
+let countdown = 0;
+let countdownTimer = null;
+
+sendBtn.addEventListener('click', async function() {
+  const email = document.getElementById('email').value.trim();
+
+  // Validate email
+  if (!email) {
+    alert('请先输入邮箱地址');
+    document.getElementById('email').focus();
+    return;
+  }
+
+  if (!email.endsWith('@tongji.edu.cn')) {
+    alert('仅接受同济大学邮箱(@tongji.edu.cn)');
+    document.getElementById('email').focus();
+    return;
+  }
+
+  // Disable button during request
+  sendBtn.disabled = true;
+  const originalText = sendBtn.textContent;
+  sendBtn.textContent = '发送中...';
+
+  try {
+    const response = await fetch('{{ url_for("send_verification_code") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: email,
+        purpose: 'register'
+      })
+    });
+
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error('Non-JSON response:', text);
+      alert('服务器返回错误: ' + (text.substring(0, 100) || '未知错误'));
+      sendBtn.disabled = false;
+      sendBtn.textContent = originalText;
+      return;
+    }
+
+    const data = await response.json();
+
+    if (response.ok && data.success) {
+      // Start countdown
+      countdown = 60;
+      startCountdown();
+      codeHint.textContent = '验证码已发送至 ' + email + '，请查收邮件';
+      codeHint.style.color = 'var(--success)';
+      document.getElementById('verification_code').focus();
+    } else {
+      alert(data.error || '发送失败，请稍后重试');
+      sendBtn.disabled = false;
+      sendBtn.textContent = originalText;
+    }
+  } catch (error) {
+    console.error('Fetch error:', error);
+    alert('请求失败: ' + error.message);
+    sendBtn.disabled = false;
+    sendBtn.textContent = originalText;
+  }
+});
+
+function startCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+  }
+
+  sendBtn.classList.add('sending');
+
+  countdownTimer = setInterval(function() {
+    if (countdown > 0) {
+      sendBtn.textContent = countdown + '秒后重试';
+      countdown--;
+    } else {
+      clearInterval(countdownTimer);
+      sendBtn.disabled = false;
+      sendBtn.textContent = '获取验证码';
+      sendBtn.classList.remove('sending');
+    }
+  }, 1000);
+}
+
+// Real-time validation
+document.getElementById('password').addEventListener('input', function() {
+  const lengthReq = document.getElementById('pwdLength');
+  if (this.value.length >= 6) {
+    lengthReq.classList.add('met');
+    lengthReq.textContent = '✓ 密码长度符合要求';
+  } else {
+    lengthReq.classList.remove('met');
+    lengthReq.textContent = '密码长度至少6位';
+  }
+});
+
+document.getElementById('password_confirm').addEventListener('input', function() {
+  const matchReq = document.getElementById('pwdMatch');
+  const password = document.getElementById('password').value;
+  if (this.value === password && this.value !== '') {
+    matchReq.classList.add('met');
+    matchReq.textContent = '✓ 两次输入一致';
+  } else {
+    matchReq.classList.remove('met');
+    matchReq.textContent = '两次输入的密码需要一致';
+  }
+});
+
+// Email validation for code button
+document.getElementById('email').addEventListener('input', function() {
+  const codeHint = document.getElementById('codeHint');
+  const email = this.value.trim();
+
+  if (email && !email.endsWith('@tongji.edu.cn')) {
+    codeHint.textContent = '仅接受 @tongji.edu.cn 邮箱';
+    codeHint.style.color = 'var(--error)';
+  } else {
+    codeHint.textContent = '点击获取验证码，将发送至您的邮箱';
+    codeHint.style.color = 'var(--text3)';
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理员后台 - 物理实验报告生成器</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f5f7;--card:#fff;--border:#e2e8f0;
+  --text:#1e293b;--text2:#64748b;--text3:#94a3b8;
+  --primary:#2563eb;--primary-hover:#1d4ed8;
+  --success:#16a34a;--error:#dc2626;--amber:#d97706;
+  --radius:10px;--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+header{background:var(--card);padding:16px 24px;border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:20px;font-weight:600}
+header .user-info{display:flex;align-items:center;gap:16px;font-size:14px;color:var(--text2)}
+header .user-info span{color:var(--text);font-weight:500}
+header .btn{font-size:13px;padding:6px 12px;background:var(--primary);color:#fff;border:none;border-radius:6px;cursor:pointer;text-decoration:none}
+header .btn:hover{background:var(--primary-hover)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px}
+.stat-card{background:var(--card);padding:20px;border-radius:var(--radius);box-shadow:var(--shadow)}
+.stat-card h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.stat-card .value{font-size:28px;font-weight:600;color:var(--primary)}
+.card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;margin-bottom:20px}
+.card-title{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}
+.btn-refresh{font-size:13px;padding:6px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;cursor:pointer}
+.btn-refresh:hover{background:var(--border)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;padding:12px;background:#f8fafc;font-weight:500;color:var(--text2);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:12px;border-bottom:1px solid var(--border)}
+tr:hover{background:#f8fafc}
+.email{font-weight:500;color:var(--primary)}
+.tag{display:inline-block;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:500}
+.tag-success{background:#dcfce7;color:#166534}
+.tag-neutral{background:#f1f5f9;color:#475569}
+.btn-small{font-size:12px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer}
+.btn-danger{background:var(--error);color:#fff}
+.btn-danger:hover{opacity:.9}
+.btn-info{background:var(--primary);color:#fff}
+.btn-info:hover{opacity:.9}
+.api-key-cell{font-family:monospace;font-size:12px;color:var(--text2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.modal.active{display:flex}
+.modal-content{background:#fff;border-radius:var(--radius);padding:24px;max-width:500px;width:90%;max-height:80vh;overflow:auto}
+.modal-header{margin-bottom:16px}
+.modal-header h3{font-size:18px;margin-bottom:4px}
+.modal-header p{font-size:13px;color:var(--text2)}
+.modal-body{margin-bottom:16px}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px}
+.modal-footer button{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px}
+.modal-footer .btn-cancel{background:var(--bg);color:var(--text)}
+.modal-footer .btn-confirm{background:var(--error);color:#fff}
+.detail-row{margin-bottom:12px}
+.detail-row label{display:block;font-size:12px;color:var(--text2);margin-bottom:4px}
+.detail-row .value{font-size:14px;color:var(--text);word-break:break-all}
+.encrypted-key{background:#f8fafc;padding:8px;border-radius:4px;font-family:monospace;font-size:11px;word-break:break-all;max-height:100px;overflow:auto}
+.empty-state{text-align:center;padding:40px;color:var(--text2)}
+.empty-state h3{margin-bottom:8px;color:var(--text)}
+.input-text,.input-textarea{
+  width:100%;
+  padding:8px 10px;
+  border:1px solid var(--border);
+  border-radius:6px;
+  font-size:14px;
+  color:var(--text);
+}
+.input-textarea{
+  min-height:150px;
+  resize:vertical;
+  font-family:Consolas,Monaco,'Courier New',monospace;
+  font-size:13px;
+}
+.announcement-preview{
+  font-size:12px;
+  color:var(--text2);
+  max-width:320px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.announcement-editor-preview{
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:#f8fafc;
+  padding:12px;
+  min-height:120px;
+  font-size:13px;
+  color:var(--text);
+}
+@media(max-width:768px){
+  .container{padding:12px}
+  header{flex-direction:column;gap:12px;text-align:center}
+  table{font-size:12px}
+  th,td{padding:8px}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🔐 管理员控制台</h1>
+    <div class="user-info">
+      <span>管理员: {{ current_user.email }}</span>
+      <a href="{{ url_for('logout') }}" class="btn">退出登录</a>
+    </div>
+  </header>
+  
+  <div class="stats">
+    <div class="stat-card">
+      <h3>注册用户</h3>
+      <div class="value" id="userCount">-</div>
+    </div>
+    <div class="stat-card">
+      <h3>模板总数</h3>
+      <div class="value" id="templateCount">-</div>
+    </div>
+    <div class="stat-card">
+      <h3>系统实验资料</h3>
+      <div class="value" id="materialCount">-</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>公告管理</span>
+      <button class="btn-refresh" onclick="loadAnnouncements()">🔄 刷新</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:14px;">
+      <div class="detail-row">
+        <label>公告标题</label>
+        <input id="announcementTitle" class="input-text" type="text" placeholder="例如：系统维护通知（2月28日）">
+      </div>
+      <div class="detail-row">
+        <label>公告内容（Markdown）</label>
+        <textarea id="announcementContent" class="input-textarea" placeholder="# 维护通知&#10;&#10;- 时间：2026-02-28 23:00-23:30&#10;- 影响：期间可能无法生成报告"></textarea>
+      </div>
+      <div class="detail-row">
+        <label>实时预览</label>
+        <div id="announcementEditorPreview" class="announcement-editor-preview">输入 Markdown 后将在这里预览</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="detail-row">
+          <label>生效开始时间（可选）</label>
+          <input id="announcementStartAt" class="input-text" type="datetime-local">
+        </div>
+        <div class="detail-row">
+          <label>生效结束时间（可选）</label>
+          <input id="announcementEndAt" class="input-text" type="datetime-local">
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;align-items:center;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);margin:0;">
+          <input id="announcementPinned" type="checkbox"> 置顶公告（优先弹出）
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);margin:0;">
+          <input id="announcementActive" type="checkbox" checked> 启用公告
+        </label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;">
+        <button id="announcementCancelEditBtn" class="btn-small" style="background:var(--bg);color:var(--text);padding:8px 14px;margin-right:8px;display:none;" onclick="cancelAnnouncementEdit()">取消编辑</button>
+        <button id="announcementSubmitBtn" class="btn-small" style="background:var(--success);color:#fff;padding:8px 14px;" onclick="submitAnnouncement()">发布公告</button>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>标题</th>
+          <th>摘要</th>
+          <th>置顶</th>
+          <th>有效期</th>
+          <th>发布时间</th>
+          <th>发布人</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="announcementTableBody">
+        <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+  
+  <!-- System Materials Management -->
+  <div class="card">
+    <div class="card-title">
+      <span>系统资料管理</span>
+      <button class="btn-refresh" onclick="loadMaterials()" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 上传新实验资料</button>
+    </div>
+    <div id="materialTable">
+      <table>
+        <thead>
+          <tr>
+            <th>实验名称</th>
+            <th>分类</th>
+            <th>描述</th>
+            <th>资料</th>
+            <th>样例</th>
+            <th>上传时间</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="materialTableBody">
+          <tr><td colspan="8" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  
+  <div class="card">
+    <div class="card-title">
+      <span>用户管理</span>
+      <button class="btn-refresh" onclick="loadUsers()">🔄 刷新</button>
+    </div>
+    <div id="userTable">
+      <table>
+        <thead>
+          <tr>
+            <th>邮箱</th>
+            <th>注册时间</th>
+            <th>最后登录</th>
+            <th>模板数</th>
+            <th>API Key</th>
+            <th>身份</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="userTableBody">
+          <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>问题反馈管理</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn-refresh" id="cleanupBtn" onclick="runCleanup()">🧹 立即清理临时文件</button>
+        <button class="btn-refresh" onclick="loadFeedbacks()">🔄 刷新</button>
+      </div>
+    </div>
+    <div id="cleanupResult" style="font-size:12px;color:var(--text2);margin-bottom:10px;"></div>
+    <div id="feedbackTable">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>用户</th>
+            <th>反馈内容</th>
+            <th>图片</th>
+            <th>状态</th>
+            <th>管理员回复</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="feedbackTableBody">
+          <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- User Detail Modal -->
+<div class="modal" id="userModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>用户详情</h3>
+      <p>查看用户完整信息</p>
+    </div>
+    <div class="modal-body" id="userDetailBody">
+      <!-- Dynamic content -->
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirm Modal -->
+<div class="modal" id="deleteModal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>确认删除</h3>
+      <p>此操作不可撤销，用户所有数据将被永久删除</p>
+    </div>
+    <div class="modal-body">
+      <p>您确定要删除用户 <strong id="deleteUserEmail"></strong> 吗？</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeDeleteModal()">取消</button>
+      <button class="btn-confirm" onclick="confirmDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="replyModal">
+  <div class="modal-content" style="max-width:680px;">
+    <div class="modal-header">
+      <h3>回复反馈</h3>
+      <p id="replyModalMeta">-</p>
+    </div>
+    <div class="modal-body">
+      <div class="detail-row">
+        <label>反馈内容</label>
+        <div class="value" id="replyModalContent" style="white-space:pre-wrap;"></div>
+      </div>
+      <div class="detail-row">
+        <label>状态</label>
+        <select id="replyModalStatus" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;">
+          <option value="pending">待处理</option>
+          <option value="replied">已回复</option>
+          <option value="closed">已关闭</option>
+        </select>
+      </div>
+      <div class="detail-row">
+        <label>管理员回复</label>
+        <textarea id="replyModalText" style="width:100%;min-height:120px;padding:8px;border:1px solid var(--border);border-radius:6px;" placeholder="请输入回复内容..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeReplyModal()">取消</button>
+      <button class="btn-confirm" style="background:var(--primary)" onclick="submitReply()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let users = [];
+let deleteUserId = null;
+let currentAdminUser = null;
+let feedbacks = [];
+let currentReplyFeedbackId = null;
+let announcements = [];
+let editingAnnouncementId = null;
+
+// 获取当前登录的管理员信息
+async function loadCurrentAdmin() {
+  try {
+    const res = await fetch('/api/user/profile');
+    if (res.ok) {
+      currentAdminUser = await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to load current admin:', e);
+  }
+}
+
+// Load stats
+async function loadStats() {
+  try {
+    const res = await fetch('/api/admin/stats');
+    const data = await res.json();
+    document.getElementById('userCount').textContent = data.user_count;
+    document.getElementById('templateCount').textContent = data.template_count;
+    document.getElementById('materialCount').textContent = data.material_count || 0;
+  } catch (e) {
+    console.error('Failed to load stats:', e);
+  }
+}
+
+// Load users
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/admin/users');
+    users = await res.json();
+    renderUsers();
+  } catch (e) {
+    console.error('Failed to load users:', e);
+    document.getElementById('userTableBody').innerHTML = 
+      '<tr><td colspan="6" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+async function loadFeedbacks() {
+  try {
+    const res = await fetch('/api/admin/feedback');
+    feedbacks = await res.json();
+    renderFeedbacks();
+  } catch (e) {
+    console.error('Failed to load feedbacks:', e);
+    document.getElementById('feedbackTableBody').innerHTML =
+      '<tr><td colspan="7" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+async function loadAnnouncements() {
+  try {
+    const res = await fetch('/api/admin/announcements');
+    announcements = await res.json();
+    renderAnnouncements();
+  } catch (e) {
+    console.error('Failed to load announcements:', e);
+    document.getElementById('announcementTableBody').innerHTML =
+      '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+function renderAnnouncements() {
+  const tbody = document.getElementById('announcementTableBody');
+  if (!Array.isArray(announcements) || announcements.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无公告</td></tr>';
+    return;
+  }
+  tbody.innerHTML = announcements.map(row => {
+    const preview = String(row.content_md || '').replace(/\s+/g, ' ').slice(0, 80);
+    const period = `${row.start_at ? formatDate(row.start_at) : '立即'} ~ ${row.end_at ? formatDate(row.end_at) : '长期有效'}`;
+    return `
+      <tr>
+        <td>${row.id}</td>
+        <td>${row.title || '-'}</td>
+        <td><div class="announcement-preview">${preview || '-'}</div></td>
+        <td>${row.is_pinned ? '<span class="tag tag-success">是</span>' : '<span class="tag tag-neutral">否</span>'}</td>
+        <td style="max-width:220px;">${period}</td>
+        <td>${formatDate(row.created_at)}</td>
+        <td>${row.created_by_email || '-'}</td>
+        <td>
+          <button class="btn-small btn-info" onclick="editAnnouncement(${row.id})">编辑</button>
+          <button class="btn-small btn-danger" onclick="deleteAnnouncement(${row.id})">删除</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderAnnouncementMarkdown(md) {
+  const src = String(md || '').replace(/\r\n?/g, '\n');
+  const codeBlocks = [];
+  const placeholderText = src.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const token = `@@CODEBLOCK_${codeBlocks.length}@@`;
+    codeBlocks.push(code);
+    return token;
+  });
+
+  const inline = (raw) => {
+    let text = escapeHtml(raw);
+    text = text.replace(/`([^`]+)`/g, '<code style="background:#eef2ff;padding:2px 6px;border-radius:4px;color:#1d4ed8;">$1</code>');
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#2563eb;">$1</a>');
+    return text;
+  };
+
+  const out = [];
+  const lines = placeholderText.split('\n');
+  let inUl = false;
+  let inOl = false;
+  const closeLists = () => {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeLists();
+      continue;
+    }
+
+    const codeMatch = trimmed.match(/^@@CODEBLOCK_(\d+)@@$/);
+    if (codeMatch) {
+      closeLists();
+      out.push(trimmed);
+      continue;
+    }
+
+    const h3 = trimmed.match(/^###\s+(.+)$/);
+    const h2 = trimmed.match(/^##\s+(.+)$/);
+    const h1 = trimmed.match(/^#\s+(.+)$/);
+    if (h3 || h2 || h1) {
+      closeLists();
+      if (h1) out.push(`<h3 style="font-size:18px;margin:8px 0 10px;color:#1d4ed8;">${inline(h1[1])}</h3>`);
+      if (h2) out.push(`<h4 style="font-size:16px;margin:6px 0 8px;color:#1e293b;">${inline(h2[1])}</h4>`);
+      if (h3) out.push(`<h5 style="font-size:14px;margin:6px 0 8px;color:#334155;">${inline(h3[1])}</h5>`);
+      continue;
+    }
+
+    if (/^([-*_]\s*){3,}$/.test(trimmed)) {
+      closeLists();
+      out.push('<hr style="border:none;border-top:1px solid #e2e8f0;margin:10px 0;">');
+      continue;
+    }
+
+    const ul = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (ul) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul style="padding-left:20px;margin:6px 0;">'); inUl = true; }
+      out.push(`<li style="margin:4px 0;">${inline(ul[1])}</li>`);
+      continue;
+    }
+
+    const ol = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (ol) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol style="padding-left:20px;margin:6px 0;">'); inOl = true; }
+      out.push(`<li style="margin:4px 0;">${inline(ol[1])}</li>`);
+      continue;
+    }
+
+    closeLists();
+    out.push(`<p style="margin:6px 0;line-height:1.6;">${inline(trimmed)}</p>`);
+  }
+
+  closeLists();
+  let html = out.join('');
+  codeBlocks.forEach((code, i) => {
+    html = html.replace(
+      `@@CODEBLOCK_${i}@@`,
+      `<pre style="background:#0f172a;color:#f8fafc;padding:10px;border-radius:6px;overflow-x:auto;margin:8px 0;"><code>${escapeHtml(code)}</code></pre>`
+    );
+  });
+  return html || '<span style="color:var(--text3);">输入 Markdown 后将在这里预览</span>';
+}
+
+function updateAnnouncementPreview() {
+  const contentEl = document.getElementById('announcementContent');
+  const previewEl = document.getElementById('announcementEditorPreview');
+  if (!contentEl || !previewEl) return;
+  previewEl.innerHTML = renderAnnouncementMarkdown(contentEl.value || '');
+}
+
+async function submitAnnouncement() {
+  const titleEl = document.getElementById('announcementTitle');
+  const contentEl = document.getElementById('announcementContent');
+  const pinnedEl = document.getElementById('announcementPinned');
+  const activeEl = document.getElementById('announcementActive');
+  const startAtEl = document.getElementById('announcementStartAt');
+  const endAtEl = document.getElementById('announcementEndAt');
+  const submitBtn = document.getElementById('announcementSubmitBtn');
+  const title = (titleEl.value || '').trim();
+  const content_md = (contentEl.value || '').trim();
+  const is_pinned = !!(pinnedEl && pinnedEl.checked);
+  const is_active = !!(activeEl && activeEl.checked);
+  const start_at = (startAtEl && startAtEl.value) ? startAtEl.value : null;
+  const end_at = (endAtEl && endAtEl.value) ? endAtEl.value : null;
+  if (!title) {
+    alert('请输入公告标题');
+    titleEl.focus();
+    return;
+  }
+  if (!content_md) {
+    alert('请输入公告内容（Markdown）');
+    contentEl.focus();
+    return;
+  }
+  try {
+    const isEditing = !!editingAnnouncementId;
+    const payload = { title, content_md, is_pinned, start_at, end_at, is_active };
+    if (isEditing) {
+      payload.announcement_id = editingAnnouncementId;
+    }
+    const res = await fetch('/api/admin/announcements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || (isEditing ? '更新失败' : '发布失败'));
+      return;
+    }
+    alert(isEditing ? '公告更新成功' : '公告发布成功');
+    resetAnnouncementForm();
+    loadAnnouncements();
+  } catch (e) {
+    const isEditing = !!editingAnnouncementId;
+    alert((isEditing ? '更新失败: ' : '发布失败: ') + e.message);
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+    }
+  }
+}
+
+function toDatetimeLocalValue(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function resetAnnouncementForm() {
+  const titleEl = document.getElementById('announcementTitle');
+  const contentEl = document.getElementById('announcementContent');
+  const pinnedEl = document.getElementById('announcementPinned');
+  const activeEl = document.getElementById('announcementActive');
+  const startAtEl = document.getElementById('announcementStartAt');
+  const endAtEl = document.getElementById('announcementEndAt');
+  const submitBtn = document.getElementById('announcementSubmitBtn');
+  const cancelBtn = document.getElementById('announcementCancelEditBtn');
+
+  editingAnnouncementId = null;
+  if (titleEl) titleEl.value = '';
+  if (contentEl) contentEl.value = '';
+  if (pinnedEl) pinnedEl.checked = false;
+  if (activeEl) activeEl.checked = true;
+  if (startAtEl) startAtEl.value = '';
+  if (endAtEl) endAtEl.value = '';
+  if (submitBtn) submitBtn.textContent = '发布公告';
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  updateAnnouncementPreview();
+}
+
+function editAnnouncement(id) {
+  const row = announcements.find(x => x.id === id);
+  if (!row) return;
+  editingAnnouncementId = id;
+
+  const titleEl = document.getElementById('announcementTitle');
+  const contentEl = document.getElementById('announcementContent');
+  const pinnedEl = document.getElementById('announcementPinned');
+  const activeEl = document.getElementById('announcementActive');
+  const startAtEl = document.getElementById('announcementStartAt');
+  const endAtEl = document.getElementById('announcementEndAt');
+  const submitBtn = document.getElementById('announcementSubmitBtn');
+  const cancelBtn = document.getElementById('announcementCancelEditBtn');
+
+  if (titleEl) titleEl.value = row.title || '';
+  if (contentEl) contentEl.value = row.content_md || '';
+  if (pinnedEl) pinnedEl.checked = !!row.is_pinned;
+  if (activeEl) activeEl.checked = row.is_active !== false;
+  if (startAtEl) startAtEl.value = toDatetimeLocalValue(row.start_at);
+  if (endAtEl) endAtEl.value = toDatetimeLocalValue(row.end_at);
+  if (submitBtn) submitBtn.textContent = '保存修改';
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
+  updateAnnouncementPreview();
+  if (titleEl) titleEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function cancelAnnouncementEdit() {
+  resetAnnouncementForm();
+}
+
+async function deleteAnnouncement(id) {
+  if (!confirm('确定要删除该公告吗？')) return;
+  try {
+    const res = await fetch(`/api/admin/announcements/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '删除失败');
+      return;
+    }
+    alert('公告已删除');
+    loadAnnouncements();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let val = bytes;
+  let idx = 0;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx += 1;
+  }
+  return `${val.toFixed(idx === 0 ? 0 : 2)} ${units[idx]}`;
+}
+
+async function runCleanup() {
+  const btn = document.getElementById('cleanupBtn');
+  const result = document.getElementById('cleanupResult');
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = '清理中...';
+  try {
+    const res = await fetch('/api/admin/cleanup', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '清理失败');
+      return;
+    }
+    result.textContent =
+      `清理完成：删除临时目录 ${data.deleted_upload_dirs} 个，删除输出文件 ${data.deleted_output_files} 个，释放空间 ${formatBytes(data.reclaimed_bytes)}。`;
+    result.style.color = 'var(--success)';
+  } catch (e) {
+    result.textContent = `清理失败：${e.message}`;
+    result.style.color = 'var(--error)';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+function statusText(status) {
+  if (status === 'replied') return '已回复';
+  if (status === 'closed') return '已关闭';
+  return '待处理';
+}
+
+function renderFeedbacks() {
+  const tbody = document.getElementById('feedbackTableBody');
+  if (!Array.isArray(feedbacks) || feedbacks.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无反馈</td></tr>';
+    return;
+  }
+  tbody.innerHTML = feedbacks.map(row => {
+    const imageLinks = (row.image_paths || []).map((p, idx) =>
+      `<a href="/api/feedback/image?path=${encodeURIComponent(p)}" target="_blank">图${idx + 1}</a>`
+    ).join(' ');
+    const safeEmail = escapeHtml(row.user_email || '-');
+    const safeContent = escapeHtml(row.content || '');
+    const safeReply = escapeHtml(row.admin_reply || '-');
+    return `
+    <tr>
+      <td>${row.id}</td>
+      <td>${safeEmail}</td>
+      <td style="max-width:280px;white-space:pre-wrap;">${safeContent}</td>
+      <td>${imageLinks || '-'}</td>
+      <td><span class="tag ${row.status === 'replied' ? 'tag-success' : 'tag-neutral'}">${statusText(row.status)}</span></td>
+      <td style="max-width:240px;white-space:pre-wrap;">${safeReply}</td>
+      <td>
+        <button class="btn-small btn-info" onclick="openReplyModal(${row.id})">回复</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openReplyModal(feedbackId) {
+  const row = feedbacks.find(x => x.id === feedbackId);
+  if (!row) return;
+  currentReplyFeedbackId = feedbackId;
+  document.getElementById('replyModalMeta').textContent = `反馈 #${row.id} · ${row.user_email || '-'}`;
+  document.getElementById('replyModalContent').textContent = row.content || '';
+  document.getElementById('replyModalStatus').value = row.status || 'pending';
+  document.getElementById('replyModalText').value = row.admin_reply || '';
+  document.getElementById('replyModal').classList.add('active');
+}
+
+function closeReplyModal() {
+  currentReplyFeedbackId = null;
+  document.getElementById('replyModal').classList.remove('active');
+}
+
+async function submitReply() {
+  if (!currentReplyFeedbackId) return;
+  const reply = document.getElementById('replyModalText').value.trim();
+  const status = document.getElementById('replyModalStatus').value;
+  if (!reply) {
+    alert('请输入回复内容');
+    return;
+  }
+  try {
+    const res = await fetch(`/api/admin/feedback/${currentReplyFeedbackId}/reply`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply, status })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '保存失败');
+      return;
+    }
+    alert('回复已保存');
+    closeReplyModal();
+    loadFeedbacks();
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  }
+}
+
+// Render users table
+function renderUsers() {
+  const tbody = document.getElementById('userTableBody');
+  if (users.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无用户数据</td></tr>';
+    return;
+  }
+  
+  const isMainAdmin = currentAdminUser && currentAdminUser.email === 'admin';
+  
+  tbody.innerHTML = users.map(u => {
+    // 判断是否为主管理员
+    const isMainUser = u.email === 'admin';
+    const isAdminUser = u.is_admin;
+    
+    // 构建身份标签
+    let roleTag = '<span class="tag tag-neutral">普通用户</span>';
+    if (isMainUser) {
+      roleTag = '<span class="tag tag-success">主管理员</span>';
+    } else if (isAdminUser) {
+      roleTag = '<span class="tag tag-success">管理员</span>';
+    }
+    
+    // 构建操作按钮
+    let actionButtons = `<button class="btn-small btn-info" onclick="showUserDetail(${u.id})">查看</button>`;
+    
+    // 主管理员可以册封/撤销其他管理员权限（但不能操作自己和主管理员）
+    if (isMainAdmin && !isMainUser && u.id !== currentAdminUser.id) {
+      if (isAdminUser) {
+        actionButtons += ` <button class="btn-small" style="background:#d97706;color:#fff" onclick="toggleAdmin(${u.id}, false)">撤销权限</button>`;
+      } else {
+        actionButtons += ` <button class="btn-small" style="background:#16a34a;color:#fff" onclick="toggleAdmin(${u.id}, true)">册封管理员</button>`;
+      }
+    }
+    
+    // 删除按钮（不能删除主管理员和自己）
+    if (!isMainUser && u.id !== currentAdminUser.id) {
+      actionButtons += ` <button class="btn-small btn-danger" onclick="showDeleteModal(${u.id}, '${u.email}')">删除</button>`;
+    }
+    
+    return `
+    <tr>
+      <td class="email">${u.email}</td>
+      <td>${formatDate(u.created_at)}</td>
+      <td>${u.last_login ? formatDate(u.last_login) : '-'}</td>
+      <td>${u.template_count}</td>
+      <td>${u.has_api_key ? '<span class="tag tag-success">已设置</span>' : '<span class="tag tag-neutral">未设置</span>'}</td>
+      <td>${roleTag}</td>
+      <td>${actionButtons}</td>
+    </tr>
+  `}).join('');
+}
+
+// 切换用户管理员权限
+async function toggleAdmin(userId, isAdmin) {
+  const action = isAdmin ? '册封' : '撤销';
+  if (!confirm(`确定要${action}该用户的管理员权限吗？`)) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/admin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_admin: isAdmin })
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      alert(data.message || '操作成功');
+      loadUsers();
+    } else {
+      alert(data.error || '操作失败');
+    }
+  } catch (e) {
+    alert('操作失败: ' + e.message);
+  }
+}
+
+// Format date
+function formatDate(isoString) {
+  if (!isoString) return '-';
+  const d = new Date(isoString);
+  return d.toLocaleString('zh-CN', { 
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// Show user detail
+function showUserDetail(userId) {
+  const user = users.find(u => u.id === userId);
+  if (!user) return;
+  
+  // 判断用户身份
+  let roleText = '普通用户';
+  if (user.email === 'admin') {
+    roleText = '主管理员';
+  } else if (user.is_admin) {
+    roleText = '管理员';
+  }
+  
+  const body = document.getElementById('userDetailBody');
+  body.innerHTML = `
+    <div class="detail-row">
+      <label>用户ID</label>
+      <div class="value">${user.id}</div>
+    </div>
+    <div class="detail-row">
+      <label>邮箱</label>
+      <div class="value">${user.email}</div>
+    </div>
+    <div class="detail-row">
+      <label>身份</label>
+      <div class="value">${roleText}</div>
+    </div>
+    <div class="detail-row">
+      <label>注册时间</label>
+      <div class="value">${formatDate(user.created_at)}</div>
+    </div>
+    <div class="detail-row">
+      <label>最后登录</label>
+      <div class="value">${formatDate(user.last_login)}</div>
+    </div>
+    <div class="detail-row">
+      <label>模板数量</label>
+      <div class="value">${user.template_count}</div>
+    </div>
+    <div class="detail-row">
+      <label>API Key 加密状态</label>
+      <div class="value">${user.has_api_key ? '已设置' : '未设置'}</div>
+    </div>
+    ${user.api_key_encrypted ? `
+    <div class="detail-row">
+      <label>加密后的 API Key (Base64)</label>
+      <div class="encrypted-key">${user.api_key_encrypted}</div>
+    </div>
+    <div class="detail-row">
+      <label>加密 Nonce</label>
+      <div class="value" style="font-family:monospace;font-size:12px;">${user.api_key_nonce || '-'}</div>
+    </div>
+    ` : ''}
+  `;
+  
+  document.getElementById('userModal').classList.add('active');
+}
+
+// Close modal
+function closeModal() {
+  document.getElementById('userModal').classList.remove('active');
+}
+
+// Show delete modal
+function showDeleteModal(userId, email) {
+  deleteUserId = userId;
+  document.getElementById('deleteUserEmail').textContent = email;
+  document.getElementById('deleteModal').classList.add('active');
+}
+
+// Close delete modal
+function closeDeleteModal() {
+  document.getElementById('deleteModal').classList.remove('active');
+  deleteUserId = null;
+}
+
+// Confirm delete
+async function confirmDelete() {
+  if (!deleteUserId) return;
+  
+  try {
+    const res = await fetch(`/api/admin/users/${deleteUserId}`, { method: 'DELETE' });
+    
+    // 检查响应是否是 JSON
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      // 可能是登录页面或错误页面 HTML
+      const text = await res.text();
+      if (text.includes('<!doctype') || text.includes('<!DOCTYPE')) {
+        alert('删除失败: 会话已过期或权限不足，请重新登录');
+        window.location.href = '/login';
+        return;
+      }
+      alert('删除失败: 服务器返回无效响应');
+      return;
+    }
+    
+    const data = await res.json();
+    
+    if (res.ok) {
+      alert('用户已删除');
+      closeDeleteModal();
+      loadUsers();
+      loadStats();
+    } else {
+      alert(data.error || '删除失败');
+    }
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+// ===================== System Materials Management =====================
+let materials = [];
+
+async function loadMaterials() {
+  try {
+    const res = await fetch('/api/admin/materials');
+    materials = await res.json();
+    renderMaterials();
+  } catch (e) {
+    console.error('Failed to load materials:', e);
+    document.getElementById('materialTableBody').innerHTML = 
+      '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+function renderMaterials() {
+  const tbody = document.getElementById('materialTableBody');
+  if (materials.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无系统资料，点击"上传新实验资料"按钮添加</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = materials.map(m => `
+    <tr>
+      <td><strong>${m.experiment_name}</strong></td>
+      <td>${m.category || '未分类'}</td>
+      <td>${m.description || '-'}</td>
+      <td>${m.material_count > 0 ? '<span class="tag tag-success">' + m.material_count + '个</span>' : '<span class="tag tag-neutral">无</span>'}</td>
+      <td>${m.has_example ? '<span class="tag tag-success">有</span>' : '<span class="tag tag-neutral">无</span>'}</td>
+      <td>${formatDate(m.uploaded_at)}</td>
+      <td>${m.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-neutral">禁用</span>'}</td>
+      <td>
+        <button class="btn-small btn-info" onclick="editMaterial(${m.id})">编辑</button>
+        <button class="btn-small btn-danger" onclick="deleteMaterial(${m.id})">删除</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function deleteMaterial(id) {
+  if (!confirm('确定要删除这个实验资料吗？这将影响所有使用此资料的用户。')) return;
+  
+  try {
+    const res = await fetch(`/api/admin/materials/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    
+    if (res.ok) {
+      alert('资料已删除');
+      loadMaterialsData();
+      loadStats();
+    } else {
+      alert(data.error || '删除失败');
+    }
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+function editMaterial(id) {
+  const material = materials.find(m => m.id === id);
+  if (!material) return;
+  
+  // Simple prompt-based edit for now
+  const newName = prompt('修改实验名称:', material.experiment_name);
+  if (newName === null) return;
+
+  const newCategory = prompt('修改分类（如：大物上/大物下）:', material.category || '未分类');
+  if (newCategory === null) return;
+  
+  const newDesc = prompt('修改描述:', material.description || '');
+  if (newDesc === null) return;
+  
+  const isActive = confirm('是否启用此资料?\n确定=启用, 取消=禁用');
+  
+  updateMaterial(id, newName, newCategory, newDesc, isActive);
+}
+
+async function updateMaterial(id, name, category, desc, isActive) {
+  try {
+    const fd = new FormData();
+    fd.append('experiment_name', name);
+    fd.append('category', category || '未分类');
+    fd.append('description', desc);
+    fd.append('is_active', isActive ? 'true' : 'false');
+    
+    const res = await fetch(`/api/admin/materials/${id}`, { method: 'PUT', body: fd });
+    const data = await res.json();
+    
+    if (res.ok) {
+      alert('资料已更新');
+      loadMaterials();
+    } else {
+      alert(data.error || '更新失败');
+    }
+  } catch (e) {
+    alert('更新失败: ' + e.message);
+  }
+}
+
+// ===================== Upload Modal =====================
+// Open upload modal when clicking the refresh button (re-purposed for upload)
+const originalLoadMaterials = loadMaterials;
+loadMaterials = function() {
+  showUploadMaterialModal();
+};
+
+function showUploadMaterialModal() {
+  const modalHtml = `
+    <div class="modal active" id="uploadMaterialModal" style="display:flex">
+      <div class="modal-content" style="max-width:600px">
+        <div class="modal-header">
+          <h3>上传系统实验资料</h3>
+          <p>上传实验指导书、参考样例和实验数据</p>
+        </div>
+        <form id="uploadMaterialForm" onsubmit="submitMaterialUpload(event)">
+          <div class="detail-row">
+            <label>实验名称 *</label>
+            <input type="text" name="experiment_name" required style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px" placeholder="如：杨氏模量测定">
+          </div>
+          <div class="detail-row">
+            <label>实验分类 *</label>
+            <select name="category" required style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+              <option value="大物上">大物上</option>
+              <option value="大物下">大物下</option>
+              <option value="其他">其他</option>
+            </select>
+          </div>
+          <div class="detail-row">
+            <label>描述</label>
+            <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" placeholder="实验简介..."></textarea>
+          </div>
+          <div class="detail-row">
+            <label>实验资料图片 * (支持多张)</label>
+            <input type="file" name="materials" multiple accept="image/*" required style="font-size:13px">
+          </div>
+          <div class="detail-row">
+            <label>参考样例 (.docx) - 可选</label>
+            <input type="file" name="example" accept=".docx,.doc" style="font-size:13px">
+          </div>
+          <div class="detail-row">
+            <label>默认封面信息 (JSON格式)</label>
+            <textarea name="default_cover" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-height:60px;font-family:monospace" placeholder='{"experiment_name":"杨氏模量测定","student_name":"","student_id":"","group_number":"","experiment_date":""}'></textarea>
+          </div>
+          <div class="modal-footer" style="margin-top:20px">
+            <button type="button" class="btn-cancel" onclick="closeUploadModal()">取消</button>
+            <button type="submit" class="btn-confirm" style="background:var(--success)">上传</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existing = document.getElementById('uploadMaterialModal');
+  if (existing) existing.remove();
+  
+  // Add new modal
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function closeUploadModal() {
+  const modal = document.getElementById('uploadMaterialModal');
+  if (modal) modal.remove();
+}
+
+async function submitMaterialUpload(e) {
+  e.preventDefault();
+  
+  const form = document.getElementById('uploadMaterialForm');
+  const fd = new FormData(form);
+  
+  // Check if at least materials are provided
+  const materials = form.querySelector('[name="materials"]').files;
+  if (materials.length === 0) {
+    alert('请至少上传一个实验资料图片');
+    return;
+  }
+  
+  try {
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = '上传中...';
+    
+    const res = await fetch('/api/admin/materials', { method: 'POST', body: fd });
+    const data = await res.json();
+    
+    if (res.ok) {
+      alert('资料上传成功！');
+      closeUploadModal();
+      loadMaterialsData();
+      loadStats();
+    } else {
+      alert(data.error || '上传失败');
+      btn.disabled = false;
+      btn.textContent = '上传';
+    }
+  } catch (e) {
+    alert('上传失败: ' + e.message);
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = false;
+    btn.textContent = '上传';
+  }
+}
+
+// Separate function to actually load materials data
+async function loadMaterialsData() {
+  try {
+    const res = await fetch('/api/admin/materials');
+    materials = await res.json();
+    renderMaterials();
+  } catch (e) {
+    console.error('Failed to load materials:', e);
+    document.getElementById('materialTableBody').innerHTML = 
+      '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+// Close modals on outside click
+window.onclick = function(event) {
+  if (event.target.classList.contains('modal')) {
+    event.target.classList.remove('active');
+  }
+}
+
+// Initial load
+const announcementContentEl = document.getElementById('announcementContent');
+if (announcementContentEl) {
+  announcementContentEl.addEventListener('input', updateAnnouncementPreview);
+}
+updateAnnouncementPreview();
+
+loadCurrentAdmin().then(() => {
+  loadStats();
+  loadUsers();
+  loadAnnouncements();
+  loadMaterialsData();
+  loadFeedbacks();
+});
+</script>
+</body>
+</html>

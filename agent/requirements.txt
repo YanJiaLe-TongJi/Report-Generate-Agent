@@ -1,0 +1,15 @@
+flask>=3.0
+flask-sqlalchemy>=3.0
+flask-login>=0.6
+werkzeug>=3.0
+openai>=1.0
+openpyxl>=3.1
+xlrd>=2.0
+matplotlib>=3.8
+python-docx>=1.1
+Pillow>=10.0
+latex2mathml>=3.0
+lxml>=4.9
+cryptography>=41.0
+email-validator>=2.0
+gunicorn>=21.2

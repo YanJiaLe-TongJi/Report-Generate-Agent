@@ -37,6 +37,8 @@ tr:hover{background:#f8fafc}
 .tag{display:inline-block;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:500}
 .tag-success{background:#dcfce7;color:#166534}
 .tag-neutral{background:#f1f5f9;color:#475569}
+.tag-warning{background:#fef3c7;color:#92400e}
+.tag-error{background:#fee2e2;color:#991b1b}
 .btn-small{font-size:12px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer}
 .btn-danger{background:var(--error);color:#fff}
 .btn-danger:hover{opacity:.9}
@@ -188,8 +190,12 @@ tr:hover{background:#f8fafc}
   <div class="card">
     <div class="card-title">
       <span>系统资料管理</span>
-      <button class="btn-refresh" onclick="loadMaterials()" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 上传新实验资料</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button id="parseAllBtn" class="btn-refresh" onclick="parseAllMaterials()" style="background:#d97706;color:#fff;border-color:#d97706">⚡ 一键解析全部资料</button>
+        <button class="btn-refresh" onclick="loadMaterials()" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 上传新实验资料</button>
+      </div>
     </div>
+    <div id="materialParseHint" style="font-size:12px;color:var(--text2);margin-bottom:10px;"></div>
     <div id="materialTable">
       <table>
         <thead>
@@ -979,6 +985,149 @@ async function confirmDelete() {
 
 // ===================== System Materials Management =====================
 let materials = [];
+let materialsLoading = false;
+let materialParsePollingTimer = null;
+
+function parseStatusHtml(m) {
+  const status = m.parse_status || 'idle';
+  const done = Number(m.parse_done || 0);
+  const total = Number(m.parse_total || m.material_count || 0);
+  if ((m.material_count || 0) === 0) {
+    return '<span class="tag tag-neutral">无需解析</span>';
+  }
+  if (status === 'parsing') {
+    // 显示类似用户端的"正在识别资料图片 (1/3)..."
+    if (done > 0 && done <= total) {
+      return `<span class="tag tag-warning">正在解析第 ${done}/${total} 张图片...</span>`;
+    } else if (done === 0) {
+      return `<span class="tag tag-warning">准备解析...</span>`;
+    }
+    return `<span class="tag tag-warning">解析中 ${done}/${total || '?'}</span>`;
+  }
+  if (status === 'done' && m.is_parsed) {
+    return `<span class="tag tag-success">已解析 ${total || done}</span>`;
+  }
+  if (status === 'error' || m.parse_error) {
+    const errMsg = m.parse_error ? m.parse_error.substring(0, 50) : '解析失败';
+    return `<span class="tag tag-error" title="${m.parse_error || ''}">${errMsg}${m.parse_error && m.parse_error.length > 50 ? '...' : ''}</span>`;
+  }
+  return '<span class="tag tag-neutral">待解析</span>';
+}
+
+function refreshMaterialParseHint() {
+  const hintEl = document.getElementById('materialParseHint');
+  if (!hintEl) return;
+  const parsing = (materials || []).filter(m => (m.parse_status || '') === 'parsing');
+  if (!parsing.length) {
+    hintEl.textContent = '';
+    hintEl.style.color = 'var(--text2)';
+    return;
+  }
+  
+  // 构建详细的进度信息，类似用户端的"正在处理第X/Y张图片"
+  let progressDetails = [];
+  for (const m of parsing) {
+    const done = Number(m.parse_done || 0);
+    const total = Number(m.parse_total || m.material_count || 0);
+    const name = m.experiment_name || '未知资料';
+    if (done > 0 && done < total) {
+      progressDetails.push(`"${name}": 正在处理第 ${done}/${total} 张图片`);
+    } else if (done === 0) {
+      progressDetails.push(`"${name}": 准备中...`);
+    } else if (done === total) {
+      progressDetails.push(`"${name}": 即将完成`);
+    }
+  }
+  
+  const totalDone = parsing.reduce((acc, m) => acc + Number(m.parse_done || 0), 0);
+  const totalAll = parsing.reduce((acc, m) => acc + Number(m.parse_total || m.material_count || 0), 0);
+  
+  if (progressDetails.length > 0) {
+    hintEl.innerHTML = progressDetails.join('<br>') + `<br><br>总体进度: ${totalDone}/${totalAll || '?'} 张`;
+  } else {
+    hintEl.textContent = `实时解析进度：${parsing.length} 条任务进行中，累计 ${totalDone}/${totalAll || '?'} 页`;
+  }
+  hintEl.style.color = 'var(--amber)';
+}
+  hintEl.textContent = `实时解析进度：${parsing.length} 条任务进行中，累计 ${totalDone}/${totalAll || '?'} 页`;
+  hintEl.style.color = 'var(--amber)';
+}
+
+function ensureMaterialParsePolling() {
+  const hasParsing = (materials || []).some(m => (m.parse_status || '') === 'parsing');
+  if (hasParsing && !materialParsePollingTimer) {
+    materialParsePollingTimer = setInterval(() => loadMaterialsData(), 2000);
+  } else if (!hasParsing && materialParsePollingTimer) {
+    clearInterval(materialParsePollingTimer);
+    materialParsePollingTimer = null;
+  }
+}
+
+async function parseMaterial(id) {
+  const target = (materials || []).find(x => x.id === id);
+  if (!target) return;
+  if (!confirm(`确定解析「${target.experiment_name}」吗？`)) return;
+  try {
+    const res = await fetch(`/api/admin/materials/${id}/parse`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '启动解析失败');
+      return;
+    }
+    // 提示用户开始解析
+    alert('预解析任务已启动，请关注下方进度显示');
+    loadMaterialsData();
+  } catch (e) {
+    alert('启动解析失败: ' + e.message);
+  }
+}
+
+async function parseAllMaterials() {
+  const parseBtn = document.getElementById('parseAllBtn');
+  const candidates = (materials || []).filter(m => (m.material_count || 0) > 0);
+  if (!candidates.length) {
+    alert('当前没有可解析的系统资料');
+    return;
+  }
+  if (!confirm(`将为 ${candidates.length} 条系统资料启动预解析任务，是否继续？\n\n注意：需要管理员账号已设置 API Key 才能使用预解析功能。`)) {
+    return;
+  }
+
+  const oldText = parseBtn ? parseBtn.textContent : '';
+  if (parseBtn) {
+    parseBtn.disabled = true;
+    parseBtn.textContent = '解析任务启动中...';
+  }
+
+  let okCount = 0;
+  const failed = [];
+  // 顺序调用，降低同时触发过多解析任务带来的峰值压力
+  for (const m of candidates) {
+    try {
+      const res = await fetch(`/api/admin/materials/${m.id}/parse`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data && data.success) {
+        okCount += 1;
+      } else {
+        failed.push(`${m.experiment_name || m.id}: ${(data && data.error) || '启动失败'}`);
+      }
+    } catch (e) {
+      failed.push(`${m.experiment_name || m.id}: ${e.message}`);
+    }
+  }
+
+  if (parseBtn) {
+    parseBtn.disabled = false;
+    parseBtn.textContent = oldText || '⚡ 一键解析全部资料';
+  }
+
+  if (!failed.length) {
+    alert(`已成功启动 ${okCount} 条资料的预解析任务。\n\n请关注下方进度显示。`);
+  } else {
+    alert(`已启动 ${okCount} 条，失败 ${failed.length} 条。\n\n` + failed.slice(0, 5).join('\n'));
+  }
+  loadMaterialsData();
+}
 
 async function loadMaterials() {
   try {
@@ -996,6 +1145,8 @@ function renderMaterials() {
   const tbody = document.getElementById('materialTableBody');
   if (materials.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无系统资料，点击"上传新实验资料"按钮添加</td></tr>';
+    refreshMaterialParseHint();
+    ensureMaterialParsePolling();
     return;
   }
   
@@ -1007,13 +1158,19 @@ function renderMaterials() {
       <td>${m.material_count > 0 ? '<span class="tag tag-success">' + m.material_count + '个</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${m.has_example ? '<span class="tag tag-success">有</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${formatDate(m.uploaded_at)}</td>
-      <td>${m.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-neutral">禁用</span>'}</td>
+      <td>
+        ${m.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-neutral">禁用</span>'}
+        <div style="margin-top:6px;">${parseStatusHtml(m)}</div>
+      </td>
       <td>
         <button class="btn-small btn-info" onclick="editMaterial(${m.id})">编辑</button>
+        ${m.material_count > 0 ? `<button class="btn-small" style="background:#d97706;color:#fff" onclick="parseMaterial(${m.id})">解析</button>` : ''}
         <button class="btn-small btn-danger" onclick="deleteMaterial(${m.id})">删除</button>
       </td>
     </tr>
   `).join('');
+  refreshMaterialParseHint();
+  ensureMaterialParsePolling();
 }
 
 async function deleteMaterial(id) {
@@ -1183,6 +1340,8 @@ async function submitMaterialUpload(e) {
 
 // Separate function to actually load materials data
 async function loadMaterialsData() {
+  if (materialsLoading) return;
+  materialsLoading = true;
   try {
     const res = await fetch('/api/admin/materials');
     materials = await res.json();
@@ -1191,6 +1350,8 @@ async function loadMaterialsData() {
     console.error('Failed to load materials:', e);
     document.getElementById('materialTableBody').innerHTML = 
       '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  } finally {
+    materialsLoading = false;
   }
 }
 

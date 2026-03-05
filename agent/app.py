@@ -305,6 +305,15 @@ class SystemMaterial(db.Model):
     # 文件路径存储
     material_paths = db.Column(db.JSON, default=list)  # 资料图片路径列表
     example_path = db.Column(db.String(500))  # 参考样例路径
+    # 预解析缓存（避免每次生成重复调用 Vision）
+    parsed_contents = db.Column(db.JSON, default=list)  # [{page, path, content}, ...]
+    parsed_at = db.Column(db.DateTime)
+    parse_error = db.Column(db.Text)
+    parse_status = db.Column(db.String(20), default='idle')  # idle / parsing / done / error
+    parse_total = db.Column(db.Integer, default=0)
+    parse_done = db.Column(db.Integer, default=0)
+    parse_started_at = db.Column(db.DateTime)
+    parse_finished_at = db.Column(db.DateTime)
 
     def get_category(self):
         """从 default_cover 中读取分类，避免数据库迁移"""
@@ -313,6 +322,8 @@ class SystemMaterial(db.Model):
         return '未分类'
     
     def to_dict(self):
+        parsed_count = len(self.parsed_contents) if isinstance(self.parsed_contents, list) else 0
+        material_count = len(self.material_paths) if self.material_paths else 0
         return {
             'id': self.id,
             'experiment_name': self.experiment_name,
@@ -321,8 +332,16 @@ class SystemMaterial(db.Model):
             'default_cover': self.default_cover,
             'uploaded_at': _to_utc_iso(self.uploaded_at),
             'is_active': self.is_active,
-            'material_count': len(self.material_paths) if self.material_paths else 0,
-            'has_example': bool(self.example_path)
+            'material_count': material_count,
+            'has_example': bool(self.example_path),
+            'is_parsed': bool(material_count > 0 and parsed_count >= material_count and not self.parse_error),
+            'parsed_at': _to_utc_iso(self.parsed_at),
+            'parse_error': self.parse_error,
+            'parse_status': self.parse_status or 'idle',
+            'parse_total': int(self.parse_total or material_count),
+            'parse_done': int(self.parse_done or 0),
+            'parse_started_at': _to_utc_iso(self.parse_started_at),
+            'parse_finished_at': _to_utc_iso(self.parse_finished_at),
         }
 
 
@@ -844,7 +863,7 @@ def get_user_profile():
 @login_required
 def update_user_api_key():
     """更新用户 API Key"""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     api_key = data.get('api_key', '').strip()
     
     if not api_key:
@@ -1185,6 +1204,7 @@ def generate():
     system_material_id = request.form.get('system_material_id')
     material_paths = []
     system_example_path = None
+    pre_parsed_contents = None
     
     if system_material_id:
         material = SystemMaterial.query.get(system_material_id)
@@ -1198,6 +1218,25 @@ def generate():
             resolved_example = _resolve_storage_path(material.example_path)
             if resolved_example and resolved_example.exists():
                 system_example_path = str(resolved_example)
+            # 若系统资料已有完整预解析缓存，则优先复用
+            if isinstance(material.parsed_contents, list) and material.parsed_contents:
+                pre_parsed_contents = []
+                for i, item in enumerate(material.parsed_contents):
+                    if not isinstance(item, dict):
+                        pre_parsed_contents = None
+                        break
+                    content = (item.get('content') or '').strip()
+                    if not content:
+                        pre_parsed_contents = None
+                        break
+                    # 生成阶段只依赖 page/content，path 仅用于调试展示
+                    pre_parsed_contents.append({
+                        'page': int(item.get('page') or (i + 1)),
+                        'path': item.get('path') or '',
+                        'content': content,
+                    })
+                if pre_parsed_contents and len(pre_parsed_contents) != len(material_paths):
+                    pre_parsed_contents = None
     
     # 如果没有系统资料或系统资料为空，使用用户上传的资料
     if not material_paths:
@@ -1258,6 +1297,7 @@ def generate():
         'raw_data_path': raw_data_path,
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
+        'pre_parsed_contents': pre_parsed_contents,
     }
     tasks[task_id]['config'] = config
 
@@ -1607,6 +1647,104 @@ def admin_toggle_admin(user_id):
     })
 
 
+def _parse_system_material(material_id):
+    """
+    后台预解析系统资料图片，缓存 Vision 识别结果。
+    只做“追加能力”，不影响已有生成流程；失败时记录 parse_error。
+    """
+    with app.app_context():
+        material = SystemMaterial.query.get(material_id)
+        if not material:
+            print(f"[预解析] 资料不存在: {material_id}")
+            return
+        paths = material.material_paths or []
+        
+        print(f"[预解析] 开始解析资料 '{material.experiment_name}', 图片数量: {len(paths)}")
+        
+        material.parse_status = 'parsing'
+        material.parse_total = len(paths)
+        material.parse_done = 0
+        material.parse_started_at = datetime.utcnow()
+        material.parse_finished_at = None
+        material.parse_error = None
+        db.session.commit()
+
+        if not paths:
+            material.parsed_contents = []
+            material.parsed_at = datetime.utcnow()
+            material.parse_error = None
+            material.parse_status = 'done'
+            material.parse_finished_at = datetime.utcnow()
+            db.session.commit()
+            return
+
+        # 优先使用系统 API Key，回退到用户提供的 API Key
+        api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
+        if not api_key and user_api_key:
+            api_key = user_api_key.strip()
+            print(f"[预解析] 使用传入的 API Key 进行解析")
+        
+        if not api_key:
+            material.parse_error = '未配置 SYSTEM_API_KEY 或 MOONSHOT_API_KEY，且无用户 API Key，无法预解析'
+            material.parse_status = 'error'
+            material.parse_finished_at = datetime.utcnow()
+            db.session.commit()
+            print(f"[预解析] 错误: 未配置 API Key")
+            return
+
+        base_url = (os.environ.get('SYSTEM_BASE_URL') or 'https://api.moonshot.cn/v1').strip()
+        # 使用32k vision模型
+        vision_model = (os.environ.get('VISION_MODEL') or 'moonshot-v1-32k-vision-preview').strip()
+        
+        print(f"[预解析] 使用 API: {base_url}, 模型: {vision_model}")
+        
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        try:
+            from ai_generator import extract_single_image
+
+            parsed = []
+            for i, raw in enumerate(paths):
+                print(f"[预解析] 正在处理第 {i+1}/{len(paths)} 张图片: {raw}")
+                
+                resolved = _resolve_storage_path(raw)
+                if not resolved or not resolved.exists():
+                    print(f"[预解析] 文件不存在: {raw}")
+                    parsed.append({'page': i + 1, 'path': str(raw), 'content': '(文件不存在，跳过解析)'})
+                    material.parse_done = i + 1
+                    db.session.commit()
+                    continue
+                
+                try:
+                    content = extract_single_image(str(resolved), client, vision_model)
+                    parsed.append({'page': i + 1, 'path': str(raw), 'content': (content or '').strip()})
+                    print(f"[预解析] 第 {i+1} 张图片解析完成，长度: {len(content or '')}")
+                except Exception as img_err:
+                    print(f"[预解析] 第 {i+1} 张图片解析失败: {img_err}")
+                    parsed.append({'page': i + 1, 'path': str(raw), 'content': f'(解析失败: {str(img_err)[:100]})'})
+                
+                material.parse_done = i + 1
+                db.session.commit()
+                if i < len(paths) - 1:
+                    time.sleep(0.5)
+
+            material.parsed_contents = parsed
+            material.parsed_at = datetime.utcnow()
+            material.parse_error = None
+            material.parse_status = 'done'
+            material.parse_finished_at = datetime.utcnow()
+            db.session.commit()
+            print(f"[预解析] 资料 '{material.experiment_name}' 解析完成")
+        except Exception as e:
+            print(f"[预解析] 解析过程出错: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            material.parse_error = f'{type(e).__name__}: {str(e)[:200]}'
+            material.parse_status = 'error'
+            material.parse_finished_at = datetime.utcnow()
+            db.session.commit()
+
+
 @app.route('/api/admin/materials', methods=['GET', 'POST'])
 @login_required
 def admin_materials():
@@ -1667,8 +1805,12 @@ def admin_materials():
     )
     db.session.add(material)
     db.session.commit()
-    
-    return jsonify({'success': True, 'id': material.id})
+
+    # 自动触发后台预解析（异步，不阻塞上传）
+    parse_thread = threading.Thread(target=_parse_system_material, args=(material.id,), daemon=True)
+    parse_thread.start()
+
+    return jsonify({'success': True, 'id': material.id, 'parsing_started': True})
 
 
 @app.route('/api/admin/materials/<int:material_id>', methods=['PUT', 'DELETE'])
@@ -1714,6 +1856,24 @@ def admin_material_detail(material_id):
 
     db.session.commit()
     return jsonify({'success': True})
+
+
+@app.route('/api/admin/materials/<int:material_id>/parse', methods=['POST'])
+@login_required
+def admin_material_parse(material_id):
+    """手动触发系统资料预解析（管理员）"""
+    if not current_user.is_admin:
+        return jsonify({'error': '需要管理员权限'}), 403
+    material = SystemMaterial.query.get_or_404(material_id)
+    
+    # 获取当前管理员的 API Key 用于预解析
+    user_api_key = current_user.get_api_key()
+    if not user_api_key:
+        return jsonify({'error': '请先在首页设置 Moonshot API Key 才能使用预解析功能'}), 400
+    
+    parse_thread = threading.Thread(target=_parse_system_material, args=(material.id, user_api_key), daemon=True)
+    parse_thread.start()
+    return jsonify({'success': True, 'message': '预解析任务已启动'})
 
 
 @app.route('/api/admin/feedback', methods=['GET'])
@@ -2057,6 +2217,7 @@ def init_database():
     with app.app_context():
         db.create_all()
         ensure_announcement_schema()
+        ensure_system_material_schema()
         migrate_stored_paths_to_relative()
         init_admin()
 
@@ -2081,6 +2242,43 @@ def ensure_announcement_schema():
         alter_sqls.append("ALTER TABLE announcements ADD COLUMN start_at DATETIME")
     if 'end_at' not in columns:
         alter_sqls.append("ALTER TABLE announcements ADD COLUMN end_at DATETIME")
+
+    if not alter_sqls:
+        return
+
+    for sql in alter_sqls:
+        db.session.execute(text(sql))
+    db.session.commit()
+
+
+def ensure_system_material_schema():
+    """
+    向后兼容：
+    为 system_materials 自动补齐预解析字段，避免改代码后因缺列启动失败。
+    """
+    inspector = inspect(db.engine)
+    table_names = set(inspector.get_table_names())
+    if 'system_materials' not in table_names:
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('system_materials')}
+    alter_sqls = []
+    if 'parsed_contents' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parsed_contents JSON")
+    if 'parsed_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parsed_at DATETIME")
+    if 'parse_error' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_error TEXT")
+    if 'parse_status' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_status VARCHAR(20)")
+    if 'parse_total' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_total INTEGER DEFAULT 0")
+    if 'parse_done' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_done INTEGER DEFAULT 0")
+    if 'parse_started_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_started_at DATETIME")
+    if 'parse_finished_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_finished_at DATETIME")
 
     if not alter_sqls:
         return
@@ -2116,6 +2314,25 @@ def migrate_stored_paths_to_relative():
         if new_example != (m.example_path or ''):
             m.example_path = new_example or None
             changed += 1
+
+        if isinstance(m.parsed_contents, list):
+            new_parsed = []
+            parsed_changed = False
+            for item in m.parsed_contents:
+                if not isinstance(item, dict):
+                    new_parsed.append(item)
+                    continue
+                copied = dict(item)
+                raw_path = copied.get('path')
+                if isinstance(raw_path, str):
+                    normalized = _normalize_storage_path(raw_path)
+                    if normalized != raw_path:
+                        copied['path'] = normalized
+                        parsed_changed = True
+                new_parsed.append(copied)
+            if parsed_changed:
+                m.parsed_contents = new_parsed
+                changed += 1
 
     feedbacks = Feedback.query.all()
     for row in feedbacks:

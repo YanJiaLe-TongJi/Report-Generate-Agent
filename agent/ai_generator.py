@@ -749,7 +749,12 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
 
         # Phase 0: 资料识别
         image_contents = []
-        if config['material_paths']:
+        pre_parsed_contents = config.get('pre_parsed_contents') or []
+        if isinstance(pre_parsed_contents, list) and pre_parsed_contents and config['material_paths']:
+            # 复用系统资料预解析结果，跳过 Vision 调用
+            image_contents = pre_parsed_contents
+            _update(task_id, f'已加载系统资料预解析结果（{len(image_contents)} 页）', tasks_dict)
+        elif config['material_paths']:
             total = len(config['material_paths'])
             for i, path in enumerate(config['material_paths']):
                 _update(task_id, f'正在识别资料图片 ({i + 1}/{total})...', tasks_dict)

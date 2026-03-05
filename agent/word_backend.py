@@ -632,6 +632,108 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
         set_chinese_font(value_run, '宋体', 12)
 
 
+def fill_cover_info_in_template(doc, cover_info):
+    """
+    在模板中填充封面信息
+    查找并替换封面相关的占位符和标签
+    """
+    if not cover_info:
+        return
+    
+    # 定义封面占位符映射
+    cover_placeholders = {
+        '%%COVER_EXPERIMENT_NAME%%': cover_info.get('experiment_name', ''),
+        '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
+        '%%COVER_STUDENT_ID%%': cover_info.get('student_id', ''),
+        '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
+    }
+    
+    # 标签规则（用于没有占位符的情况）
+    label_rules = {
+        '实验名称': ('experiment_name', '实验名称'),
+        '学生姓名': ('student_name', '学生姓名'),
+        '学号': ('student_id', '学　　号'),
+        '组号': ('group_number', '组    号'),
+        '实验日期': ('experiment_date', '实验日期'),
+    }
+    
+    def _normalize_label(text):
+        return re.sub(r'[\s　]+', '', (text or '').strip())
+    
+    # 查找第一个章节标题的位置（封面信息在此之前）
+    first_section_idx = len(doc.paragraphs)
+    for idx, para in enumerate(doc.paragraphs):
+        if para.text.strip() in KNOWN_SECTIONS:
+            first_section_idx = idx
+            break
+    
+    # 遍历封面区域的段落，替换占位符或标签
+    for idx, para in enumerate(doc.paragraphs):
+        if idx >= first_section_idx:
+            break
+        
+        full_text = ''.join(run.text for run in para.runs)
+        
+        # 1. 先尝试替换占位符
+        for placeholder, value in cover_placeholders.items():
+            if placeholder in full_text and value:
+                # 清空并替换
+                for run in para.runs:
+                    run.text = ''
+                new_text = full_text.replace(placeholder, value)
+                if para.runs:
+                    para.runs[0].text = new_text
+                break
+        else:
+            # 2. 如果没有占位符，尝试匹配标签
+            normalized = _normalize_label(full_text)
+            if normalized in label_rules:
+                field_key, display_label = label_rules[normalized]
+                value = (cover_info.get(field_key) or '').strip()
+                if value:
+                    # 清空并添加新内容
+                    for run in para.runs:
+                        run.text = ''
+                    label_run = para.add_run(f'{display_label}    ')
+                    set_chinese_font(label_run, '黑体', 12, bold=True)
+                    value_run = para.add_run(value)
+                    set_chinese_font(value_run, '宋体', 12)
+    
+    # 处理表格中的封面信息
+    for table in doc.tables:
+        # 只检查表格前几行（通常封面信息在表格中）
+        for row_idx, row in enumerate(table.rows):
+            if row_idx > 3:  # 只检查前几行
+                break
+            for cell in row.cells:
+                cell_text = ''.join(run.text for para in cell.paragraphs for run in para.runs)
+                
+                # 检查是否有占位符
+                for placeholder, value in cover_placeholders.items():
+                    if placeholder in cell_text and value:
+                        # 清空并替换
+                        for para in cell.paragraphs:
+                            for run in para.runs:
+                                run.text = ''
+                        if cell.paragraphs:
+                            new_text = cell_text.replace(placeholder, value)
+                            cell.paragraphs[0].add_run(new_text)
+                        break
+                else:
+                    # 检查标签
+                    normalized = _normalize_label(cell_text)
+                    if normalized in label_rules:
+                        field_key, display_label = label_rules[normalized]
+                        value = (cover_info.get(field_key) or '').strip()
+                        if value:
+                            for para in cell.paragraphs:
+                                for run in para.runs:
+                                    run.text = ''
+                            if cell.paragraphs:
+                                cell.paragraphs[0].add_run(f'{display_label}    {value}')
+
+
 def strip_template_section_skeleton(doc):
     """
     删除模板中从首个章节标题开始的“空章节骨架”，
@@ -674,7 +776,10 @@ def build_word_document_from_template(
     if template_path.exists():
         # 使用模板作为基础
         doc = Document(str(template_path))
-        # 保留模板首页信息给用户手工填写，不自动回填封面字段
+        
+        # 回填封面信息（即使使用模板也要填充用户填写的封面信息）
+        fill_cover_info_in_template(doc, cover_info)
+        
         had_template_sections = strip_template_section_skeleton(doc)
         # 模板不含章节骨架时，回退为追加新页写入
         if not had_template_sections:

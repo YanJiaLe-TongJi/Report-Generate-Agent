@@ -633,9 +633,35 @@ function onSystemExpChange() {
   const selectedOption = select.options[select.selectedIndex];
 
   if (select.value) {
+    // 查找选中的系统资料，获取 default_cover
+    const selectedExp = SYSTEM_EXPERIMENTS.find(exp => String(exp.id) === String(select.value));
+    const defaultCover = selectedExp ? (selectedExp.default_cover || {}) : {};
+    
+    // 自动填充封面信息（仅填充非空值）
+    if (defaultCover.experiment_name) {
+      document.getElementById('coverExpName').value = defaultCover.experiment_name;
+    }
+    if (defaultCover.student_name) {
+      document.getElementById('coverStudentName').value = defaultCover.student_name;
+    }
+    if (defaultCover.student_id) {
+      document.getElementById('coverStudentId').value = defaultCover.student_id;
+    }
+    if (defaultCover.group_number) {
+      document.getElementById('coverGroupNumber').value = defaultCover.group_number;
+    }
+    if (defaultCover.experiment_date) {
+      document.getElementById('coverExpDate').value = defaultCover.experiment_date;
+    }
+    
+    // 显示资料信息
+    const coverHint = defaultCover.experiment_name 
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--success);">已自动填充封面信息</div>` 
+      : '';
     infoDiv.innerHTML = `
       <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;">${category} / ${selectedOption.text}</div>
       <div style="font-size:12px;color:var(--text2);">使用系统实验资料，无需自行上传图片</div>
+      ${coverHint}
     `;
     files.systemExpId = select.value;
     // 禁用实验资料上传
@@ -851,7 +877,16 @@ function saveApiKey() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ api_key: apiKey })
   })
-  .then(r => r.json())
+  .then(async r => {
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      if (r.status === 401 || r.status === 302) {
+        throw new Error('登录已过期，请重新登录');
+      }
+      throw new Error(`服务器返回异常（HTTP ${r.status}）`);
+    }
+    return r.json();
+  })
   .then(d => {
     if (d.error) { alert('保存失败: ' + d.error); return; }
     alert('API Key 已保存到账户');

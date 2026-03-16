@@ -550,9 +550,10 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
     paragraphs_to_remove = []
     
     # 遍历文档中的所有段落，替换占位符
-    for i, para in enumerate(doc.paragraphs):
+    # 使用 list() 创建副本避免修改时影响迭代
+    for i, para in enumerate(list(doc.paragraphs)):
         full_text = ''.join(run.text for run in para.runs)
-        
+
         for placeholder, content in all_placeholders.items():
             if placeholder in full_text:
                 # 清空段落现有内容
@@ -612,7 +613,8 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
     def _normalize_label(text):
         return re.sub(r'[\s　]+', '', (text or '').strip())
 
-    for idx, para in enumerate(doc.paragraphs):
+    # 使用 list() 创建副本避免修改时影响迭代
+    for idx, para in enumerate(list(doc.paragraphs)):
         if idx >= first_section_idx:
             break
         normalized = _normalize_label(para.text)
@@ -621,15 +623,14 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
 
         field_key, display_label = label_rules[normalized]
         value = (cover_info.get(field_key, '') or '').strip()
-        if not value:
-            continue
 
         for run in para.runs:
             run.text = ''
         label_run = para.add_run(f'{display_label}    ')
         set_chinese_font(label_run, '黑体', 12, bold=True)
-        value_run = para.add_run(value)
-        set_chinese_font(value_run, '宋体', 12)
+        if value:
+            value_run = para.add_run(value)
+            set_chinese_font(value_run, '宋体', 12)
 
 
 def fill_cover_info_in_template(doc, cover_info):
@@ -639,8 +640,8 @@ def fill_cover_info_in_template(doc, cover_info):
     """
     if not cover_info:
         return
-    
-    # 定义封面占位符映射
+
+    # 定义封面占位符映射（移除空值检查，允许空值覆盖占位符）
     cover_placeholders = {
         '%%COVER_EXPERIMENT_NAME%%': cover_info.get('experiment_name', ''),
         '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
@@ -648,7 +649,7 @@ def fill_cover_info_in_template(doc, cover_info):
         '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
         '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
     }
-    
+
     # 标签规则（用于没有占位符的情况）
     label_rules = {
         '实验名称': ('experiment_name', '实验名称'),
@@ -657,49 +658,54 @@ def fill_cover_info_in_template(doc, cover_info):
         '组号': ('group_number', '组    号'),
         '实验日期': ('experiment_date', '实验日期'),
     }
-    
+
     def _normalize_label(text):
         return re.sub(r'[\s　]+', '', (text or '').strip())
-    
+
     # 查找第一个章节标题的位置（封面信息在此之前）
     first_section_idx = len(doc.paragraphs)
     for idx, para in enumerate(doc.paragraphs):
         if para.text.strip() in KNOWN_SECTIONS:
             first_section_idx = idx
             break
-    
+
     # 遍历封面区域的段落，替换占位符或标签
-    for idx, para in enumerate(doc.paragraphs):
+    # 使用 list() 创建副本避免修改时影响迭代
+    for idx, para in enumerate(list(doc.paragraphs)):
         if idx >= first_section_idx:
             break
-        
+
         full_text = ''.join(run.text for run in para.runs)
-        
-        # 1. 先尝试替换占位符
+
+        # 1. 先尝试替换占位符（即使值为空也要替换，清除占位符）
+        placeholder_found = False
         for placeholder, value in cover_placeholders.items():
-            if placeholder in full_text and value:
-                # 清空并替换
+            if placeholder in full_text:
+                # 清空所有 run 的文本
                 for run in para.runs:
                     run.text = ''
-                new_text = full_text.replace(placeholder, value)
+                # 替换占位符并设置到第一个 run
+                new_text = full_text.replace(placeholder, value or '')
                 if para.runs:
                     para.runs[0].text = new_text
-                break
-        else:
-            # 2. 如果没有占位符，尝试匹配标签
+                placeholder_found = True
+                break  # 每段只处理一个占位符
+
+        # 2. 如果没有找到占位符，尝试匹配标签
+        if not placeholder_found:
             normalized = _normalize_label(full_text)
             if normalized in label_rules:
                 field_key, display_label = label_rules[normalized]
                 value = (cover_info.get(field_key) or '').strip()
+                # 清空并添加新内容（即使值为空也要清除原标签）
+                for run in para.runs:
+                    run.text = ''
+                label_run = para.add_run(f'{display_label}    ')
+                set_chinese_font(label_run, '黑体', 12, bold=True)
                 if value:
-                    # 清空并添加新内容
-                    for run in para.runs:
-                        run.text = ''
-                    label_run = para.add_run(f'{display_label}    ')
-                    set_chinese_font(label_run, '黑体', 12, bold=True)
                     value_run = para.add_run(value)
                     set_chinese_font(value_run, '宋体', 12)
-    
+
     # 处理表格中的封面信息
     for table in doc.tables:
         # 只检查表格前几行（通常封面信息在表格中）
@@ -708,30 +714,35 @@ def fill_cover_info_in_template(doc, cover_info):
                 break
             for cell in row.cells:
                 cell_text = ''.join(run.text for para in cell.paragraphs for run in para.runs)
-                
-                # 检查是否有占位符
+
+                # 1. 先检查占位符（即使值为空也要替换）
+                placeholder_found = False
                 for placeholder, value in cover_placeholders.items():
-                    if placeholder in cell_text and value:
-                        # 清空并替换
+                    if placeholder in cell_text:
+                        # 清空单元格
                         for para in cell.paragraphs:
                             for run in para.runs:
                                 run.text = ''
                         if cell.paragraphs:
-                            new_text = cell_text.replace(placeholder, value)
+                            new_text = cell_text.replace(placeholder, value or '')
                             cell.paragraphs[0].add_run(new_text)
+                        placeholder_found = True
                         break
-                else:
-                    # 检查标签
+
+                # 2. 检查标签
+                if not placeholder_found:
                     normalized = _normalize_label(cell_text)
                     if normalized in label_rules:
                         field_key, display_label = label_rules[normalized]
                         value = (cover_info.get(field_key) or '').strip()
-                        if value:
-                            for para in cell.paragraphs:
-                                for run in para.runs:
-                                    run.text = ''
-                            if cell.paragraphs:
+                        for para in cell.paragraphs:
+                            for run in para.runs:
+                                run.text = ''
+                        if cell.paragraphs:
+                            if value:
                                 cell.paragraphs[0].add_run(f'{display_label}    {value}')
+                            else:
+                                cell.paragraphs[0].add_run(display_label)
 
 
 def strip_template_section_skeleton(doc):

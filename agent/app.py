@@ -573,6 +573,35 @@ def _collect_active_task_dirs():
     return active_dirs
 
 
+def _ensure_task_work_dir(config_task_dir, task_id):
+    """
+    修订/重编译前确保任务工作目录可用。
+    - 兼容历史绝对路径；
+    - 目录被清理后可自动重建；
+    - 路径异常时回退到 uploads/<task_id>。
+    """
+    raw = (str(config_task_dir or '')).strip()
+    task_dir = None
+
+    if raw:
+        p = Path(raw)
+        if p.is_absolute():
+            task_dir = p
+        else:
+            task_dir = (BASE_DIR / p).resolve()
+
+    if task_dir is None:
+        task_dir = (UPLOAD_FOLDER / task_id).resolve()
+
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        task_dir = (UPLOAD_FOLDER / task_id).resolve()
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+    return str(task_dir)
+
+
 def cleanup_expired_files():
     """
     自动清理过期文件：
@@ -1395,6 +1424,8 @@ def revise_report(task_id):
         task['steps'].append(task['current_step'])
 
         config = task['config']
+        # 原始任务目录可能已被清理线程删除，修订前确保可用
+        config['task_dir'] = _ensure_task_work_dir(config.get('task_dir'), task_id)
         revised_sections = _revise_sections_with_instruction(task['section_contents'], instruction, config)
         task['section_contents'] = revised_sections
 

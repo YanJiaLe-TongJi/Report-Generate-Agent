@@ -558,8 +558,8 @@ def _parse_image_section_mapping(image_contents):
         if ('整页文档截图' in page_shape) or ('教材' in content and '整页' in content):
             section_mapping['其他'].append(idx)
             continue
-        # 尝试从内容中提取【所属章节】
-        match = re.search(r'【所属章节】[:：]\s*(\S+)', content)
+        # 尝试从内容中提取“所属章节”，兼容不同输出格式
+        match = re.search(r'(?:【所属章节】|所属章节)\s*[:：]\s*([^\n\r]+)', content)
         if match:
             section = match.group(1).strip()
             # 映射到标准章节名
@@ -774,8 +774,9 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             assigned_indices = mapping.get(sec_name, [])
             
             if not assigned_indices:
-                # 如果没有分配图片，不给该章节任何图片材料，避免误插整页图
-                return ''
+                # 回退策略：分配为空时仍提供当前实验的全部识别文本，
+                # 避免模型误判“未读取到资料内容”。
+                return all_materials_text
             
             # 构建只包含分配图片的材料文本
             section_parts = []
@@ -790,40 +791,49 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             f"=== 资料第{ic['page']}页 ===\n{ic['content']}" for ic in image_contents
         )
 
-        _update(task_id, '正在解析实验数据...', tasks_dict)
-        data_paths = config.get('data_paths') or []
-        excel_data, parse_diag = parse_excel_data(data_paths) if data_paths else ({}, {'parsed_files': [], 'failed_files': []})
-        data_text = format_excel_for_prompt(excel_data)
-        if data_paths:
-            parsed_count = len(parse_diag.get('parsed_files', []))
-            failed_count = len(parse_diag.get('failed_files', []))
-            _update(task_id, f'实验数据文件 {len(data_paths)} 个：成功解析 {parsed_count} 个，失败 {failed_count} 个', tasks_dict)
-        if data_paths and not data_text:
-            file_names = ', '.join(Path(p).name for p in data_paths[:5])
-            _update(
-                task_id,
-                f'⚠ 未从数据文件解析到可用表格（{file_names}），请优先使用 .xlsx/.csv 或检查工作表内容是否为空',
-                tasks_dict
-            )
-            if parse_diag.get('failed_files'):
-                first = parse_diag['failed_files'][0]
-                _update(task_id, f"⚠ 示例失败原因：{first.get('file')} -> {first.get('reason', '未知错误')[:120]}", tasks_dict)
-        elif data_paths:
-            _update(task_id, f'✓ 已解析 {len(excel_data)} 个数据文件', tasks_dict)
-        _update(task_id, '正在使用 matplotlib 生成候选数据图...', tasks_dict)
-        plot_infos, plot_diag = generate_data_plots(
-            config.get('data_paths') or [], config.get('task_dir'), with_diagnostics=True
-        )
-        for fs in (plot_diag.get('file_stats') or []):
-            if fs.get('status') in ('no_numeric', 'no_plot', 'empty', 'error', 'missing'):
+        test_mode = bool(config.get('test_mode'))
+        if test_mode:
+            _update(task_id, '管理员测试模式：跳过实验数据解析与绘图', tasks_dict)
+            data_paths = config.get('data_paths') or []
+            data_text = ''
+            plot_infos = []
+            config['plot_paths'] = []
+            config['plot_infos'] = []
+        else:
+            _update(task_id, '正在解析实验数据...', tasks_dict)
+            data_paths = config.get('data_paths') or []
+            excel_data, parse_diag = parse_excel_data(data_paths) if data_paths else ({}, {'parsed_files': [], 'failed_files': []})
+            data_text = format_excel_for_prompt(excel_data)
+            if data_paths:
+                parsed_count = len(parse_diag.get('parsed_files', []))
+                failed_count = len(parse_diag.get('failed_files', []))
+                _update(task_id, f'实验数据文件 {len(data_paths)} 个：成功解析 {parsed_count} 个，失败 {failed_count} 个', tasks_dict)
+            if data_paths and not data_text:
+                file_names = ', '.join(Path(p).name for p in data_paths[:5])
                 _update(
                     task_id,
-                    f"图表诊断：{fs.get('file', '未知文件')} -> {fs.get('reason', fs.get('status', '未生成图表'))}",
+                    f'⚠ 未从数据文件解析到可用表格（{file_names}），请优先使用 .xlsx/.csv 或检查工作表内容是否为空',
                     tasks_dict
                 )
-        _update(task_id, f"图表生成结果：{len(plot_infos)} 张候选图", tasks_dict)
-        config['plot_paths'] = [p['path'] for p in plot_infos]
-        config['plot_infos'] = plot_infos
+                if parse_diag.get('failed_files'):
+                    first = parse_diag['failed_files'][0]
+                    _update(task_id, f"⚠ 示例失败原因：{first.get('file')} -> {first.get('reason', '未知错误')[:120]}", tasks_dict)
+            elif data_paths:
+                _update(task_id, f'✓ 已解析 {len(excel_data)} 个数据文件', tasks_dict)
+            _update(task_id, '正在使用 matplotlib 生成候选数据图...', tasks_dict)
+            plot_infos, plot_diag = generate_data_plots(
+                config.get('data_paths') or [], config.get('task_dir'), with_diagnostics=True
+            )
+            for fs in (plot_diag.get('file_stats') or []):
+                if fs.get('status') in ('no_numeric', 'no_plot', 'empty', 'error', 'missing'):
+                    _update(
+                        task_id,
+                        f"图表诊断：{fs.get('file', '未知文件')} -> {fs.get('reason', fs.get('status', '未生成图表'))}",
+                        tasks_dict
+                    )
+            _update(task_id, f"图表生成结果：{len(plot_infos)} 张候选图", tasks_dict)
+            config['plot_paths'] = [p['path'] for p in plot_infos]
+            config['plot_infos'] = plot_infos
 
         # 仅在“没有上传结构化数据文件”时，才从原始数据记录单识别数据
         raw_data_path = config.get('raw_data_path')
@@ -933,14 +943,49 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         # 数据处理章节只使用分配给它或原始数据相关的图片
         data_section_materials = build_section_materials(data_sec, materials_text, image_section_mapping, image_contents)
         data_example = example_sections.get(data_sec, '')
-        data_content = _generate_section(
-            client, text_model, sys_prompt, data_sec,
-            data_section_materials, data_text, data_example, data_extra,
-            format_type, material_paths, plot_infos,
-            image_section_mapping.get(data_sec, []), False
-        )
-        section_contents[data_sec] = _sanitize_section_content(data_content)
-        _update(task_id, f'「{data_sec}」生成完成（长度: {len(data_content)} 字符）', tasks_dict)
+        if test_mode:
+            if format_type == 'latex':
+                data_content = (
+                    "为便于测试，本节使用占位内容。\n"
+                    "\\begin{table}[H]\n"
+                    "\\centering\n"
+                    "\\begin{tabular}{ccc}\n"
+                    "\\toprule\n"
+                    "测量量 & 记号 & 数值(单位) \\\\\n"
+                    "\\midrule\n"
+                    " &  &  \\\\\n"
+                    " &  &  \\\\\n"
+                    "\\bottomrule\n"
+                    "\\end{tabular}\n"
+                    "\\end{table}\n\n"
+                    "核心计算公式占位：\\\\\n"
+                    "\\[ y = kx + b \\]\\\\\n"
+                    "\\[ \\bar{x}=\\frac{1}{n}\\sum_{i=1}^{n}x_i \\]\\\\\n"
+                    "\\[ u_r=\\frac{u}{x}\\times 100\\% \\]"
+                )
+            else:
+                data_content = (
+                    "为便于测试，本节使用占位内容。\n\n"
+                    "数据记录表（占位）：\n"
+                    "测量量    记号    数值(单位)\n"
+                    "        \n"
+                    "        \n\n"
+                    "核心计算公式占位：\n"
+                    "y = kx + b\n"
+                    "x_bar = (1/n) * sum(x_i)\n"
+                    "u_r = (u/x) * 100%"
+                )
+            section_contents[data_sec] = _sanitize_section_content(data_content)
+            _update(task_id, f'「{data_sec}」测试占位已写入', tasks_dict)
+        else:
+            data_content = _generate_section(
+                client, text_model, sys_prompt, data_sec,
+                data_section_materials, data_text, data_example, data_extra,
+                format_type, material_paths, plot_infos,
+                image_section_mapping.get(data_sec, []), False
+            )
+            section_contents[data_sec] = _sanitize_section_content(data_content)
+            _update(task_id, f'「{data_sec}」生成完成（长度: {len(data_content)} 字符）', tasks_dict)
 
         # Phase 3: 思考/结论类章节（不需要图片）
         phase3_sections = ['思考题', '讨论与分析', '实验结论']

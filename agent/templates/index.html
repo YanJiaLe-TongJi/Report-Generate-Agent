@@ -387,6 +387,16 @@ textarea{
         </select>
       </div>
     </div>
+    {% if current_user and current_user.is_admin %}
+    <div class="row">
+      <div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="adminTestMode" style="width:auto;">
+          管理员测试模式（允许无实验数据生成；数据处理章节使用公式+空表格占位）
+        </label>
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- System Experiment Materials -->
@@ -897,12 +907,14 @@ function saveApiKey() {
 function startGenerate() {
   const apiKey = document.getElementById('apiKey').value.trim();
   if (!apiKey) { alert('请输入 API Key'); return; }
+  const testModeEl = document.getElementById('adminTestMode');
+  const adminTestMode = !!(testModeEl && testModeEl.checked);
   // 验证：实验资料 或 系统实验至少一个；实验数据 或 原始数据记录单 至少一个
   if (!files.materials.length && !files.systemExpId) {
     alert('请上传实验资料或选择系统实验');
     return;
   }
-  if (!files.data.length && !files.rawData) {
+  if (!adminTestMode && !files.data.length && !files.rawData) {
     alert('请上传实验数据或原始数据记录单（至少一个）');
     return;
   }
@@ -940,6 +952,9 @@ function startGenerate() {
   // 添加系统实验ID
   if (files.systemExpId) {
     fd.append('system_material_id', files.systemExpId);
+  }
+  if (adminTestMode) {
+    fd.append('test_mode', '1');
   }
 
   // 添加已保存的参考样例IDs（多选）
@@ -1063,6 +1078,14 @@ function submitRevision() {
 
   reviseBtn.disabled = true;
   reviseBtn.textContent = '修订中...';
+  const pa = document.getElementById('progressArea');
+  const ra = document.getElementById('resultArea');
+  pa.classList.add('active');
+  ra.classList.remove('active');
+  document.getElementById('stepLog').innerHTML = '';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressStep').textContent = '正在提交修订任务...';
+
   fetch(`/api/revise/${lastCompletedTaskId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1074,11 +1097,12 @@ function submitRevision() {
       return d;
     })
     .then(d => {
-      alert('修订完成，已重新编译');
-      showSuccess(d.download_url, d.raw_url, d.tex_url, lastCompletedTaskId);
+      // 修订改为异步任务，提交成功后使用与生成一致的进度轮询
+      const tid = d.task_id || lastCompletedTaskId;
+      pollProgress(tid);
       revisionText.value = '';
     })
-    .catch(e => alert(e.message))
+    .catch(e => showError(e.message))
     .finally(() => {
       reviseBtn.disabled = false;
       reviseBtn.textContent = '应用修订并重新编译';

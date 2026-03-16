@@ -185,6 +185,40 @@ tr:hover{background:#f8fafc}
       </tbody>
     </table>
   </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>系统维护设置</span>
+      <button class="btn-refresh" onclick="loadMaintenance()">🔄 刷新</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);margin:0;">
+        <input id="maintenanceEnabled" type="checkbox"> 启用系统维护（启用后非管理员登录仅显示维护页）
+      </label>
+      <div class="detail-row">
+        <label>维护页面标题</label>
+        <input id="maintenanceTitle" class="input-text" type="text" placeholder="例如：系统维护中">
+      </div>
+      <div class="detail-row">
+        <label>维护内容</label>
+        <textarea id="maintenanceContent" class="input-textarea" placeholder="例如：正在升级报告引擎，预计维护期间无法生成报告。"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="detail-row">
+          <label>维护开始时间（可选）</label>
+          <input id="maintenanceStartAt" class="input-text" type="datetime-local">
+        </div>
+        <div class="detail-row">
+          <label>维护结束时间（可选）</label>
+          <input id="maintenanceEndAt" class="input-text" type="datetime-local">
+        </div>
+      </div>
+      <div id="maintenanceStatusTip" style="font-size:12px;color:var(--text2);"></div>
+      <div style="display:flex;justify-content:flex-end;">
+        <button id="maintenanceSaveBtn" class="btn-small" style="background:var(--success);color:#fff;padding:8px 14px;" onclick="saveMaintenance()">保存维护设置</button>
+      </div>
+    </div>
+  </div>
   
   <!-- System Materials Management -->
   <div class="card">
@@ -344,6 +378,7 @@ let feedbacks = [];
 let currentReplyFeedbackId = null;
 let announcements = [];
 let editingAnnouncementId = null;
+let maintenanceConfig = null;
 
 // 获取当前登录的管理员信息
 async function loadCurrentAdmin() {
@@ -404,6 +439,95 @@ async function loadAnnouncements() {
     console.error('Failed to load announcements:', e);
     document.getElementById('announcementTableBody').innerHTML =
       '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+async function loadMaintenance() {
+  try {
+    const res = await fetch('/api/admin/maintenance');
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '加载维护配置失败');
+      return;
+    }
+    maintenanceConfig = data;
+    const enabledEl = document.getElementById('maintenanceEnabled');
+    const titleEl = document.getElementById('maintenanceTitle');
+    const contentEl = document.getElementById('maintenanceContent');
+    const startEl = document.getElementById('maintenanceStartAt');
+    const endEl = document.getElementById('maintenanceEndAt');
+    if (enabledEl) enabledEl.checked = !!data.enabled;
+    if (titleEl) titleEl.value = data.title || '';
+    if (contentEl) contentEl.value = data.content || '';
+    if (startEl) startEl.value = toDatetimeLocalValue(data.start_at);
+    if (endEl) endEl.value = toDatetimeLocalValue(data.end_at);
+    updateMaintenanceStatusTip(data);
+  } catch (e) {
+    alert('加载维护配置失败: ' + e.message);
+  }
+}
+
+function updateMaintenanceStatusTip(data) {
+  const tipEl = document.getElementById('maintenanceStatusTip');
+  if (!tipEl) return;
+  if (!data || !data.enabled) {
+    tipEl.textContent = '当前维护模式：未启用。';
+    tipEl.style.color = 'var(--text2)';
+    return;
+  }
+  const period = `${data.start_at ? formatDate(data.start_at) : '立即'} ~ ${data.end_at ? formatDate(data.end_at) : '长期'}`;
+  if (data.active) {
+    tipEl.textContent = `当前维护模式：已生效（${period}）。非管理员用户登录后仅显示维护页。`;
+    tipEl.style.color = 'var(--amber)';
+  } else {
+    tipEl.textContent = `当前维护模式：已启用但未在生效时间内（${period}）。`;
+    tipEl.style.color = 'var(--text2)';
+  }
+}
+
+async function saveMaintenance() {
+  const saveBtn = document.getElementById('maintenanceSaveBtn');
+  const enabledEl = document.getElementById('maintenanceEnabled');
+  const titleEl = document.getElementById('maintenanceTitle');
+  const contentEl = document.getElementById('maintenanceContent');
+  const startEl = document.getElementById('maintenanceStartAt');
+  const endEl = document.getElementById('maintenanceEndAt');
+  if (!enabledEl || !titleEl || !contentEl || !startEl || !endEl) return;
+
+  const payload = {
+    enabled: !!enabledEl.checked,
+    title: (titleEl.value || '').trim(),
+    content: (contentEl.value || '').trim(),
+    start_at: startEl.value || null,
+    end_at: endEl.value || null,
+  };
+
+  const oldText = saveBtn ? saveBtn.textContent : '';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+  }
+  try {
+    const res = await fetch('/api/admin/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '保存维护配置失败');
+      return;
+    }
+    maintenanceConfig = data.maintenance || null;
+    updateMaintenanceStatusTip(maintenanceConfig || payload);
+    alert('维护配置已保存');
+  } catch (e) {
+    alert('保存维护配置失败: ' + e.message);
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = oldText || '保存维护设置';
+    }
   }
 }
 
@@ -1049,9 +1173,6 @@ function refreshMaterialParseHint() {
   }
   hintEl.style.color = 'var(--amber)';
 }
-  hintEl.textContent = `实时解析进度：${parsing.length} 条任务进行中，累计 ${totalDone}/${totalAll || '?'} 页`;
-  hintEl.style.color = 'var(--amber)';
-}
 
 function ensureMaterialParsePolling() {
   const hasParsing = (materials || []).some(m => (m.parse_status || '') === 'parsing');
@@ -1373,6 +1494,7 @@ loadCurrentAdmin().then(() => {
   loadStats();
   loadUsers();
   loadAnnouncements();
+  loadMaintenance();
   loadMaterialsData();
   loadFeedbacks();
 });

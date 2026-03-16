@@ -81,6 +81,7 @@ OUTPUT_FOLDER.mkdir(exist_ok=True)
 FEEDBACK_FOLDER.mkdir(parents=True, exist_ok=True)
 
 tasks = {}
+MATERIAL_PARSE_LOCK = threading.Lock()
 FILE_CLEANUP_TTL_SECONDS = int(os.environ.get('FILE_CLEANUP_TTL_SECONDS', str(10 * 60)))
 FILE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get('FILE_CLEANUP_INTERVAL_SECONDS', '60'))
 TASK_DIR_REGEX = re.compile(r'^[0-9a-fA-F-]{36}$')
@@ -116,6 +117,54 @@ def _normalize_storage_path(raw_path):
             return normalized
 
     return normalized.lstrip('./')
+
+
+def _can_reuse_preparsed_contents(material_paths, parsed_contents):
+    """
+    仅当预解析缓存与当前资料路径严格匹配时才复用，避免跨实验内容穿透。
+    匹配规则：
+    1) 两侧长度一致；
+    2) 每项 path 归一化后按顺序完全一致；
+    3) 每项 content 为非空字符串，且不是明显失败占位。
+    """
+    if not isinstance(material_paths, list) or not material_paths:
+        return False
+    if not isinstance(parsed_contents, list) or not parsed_contents:
+        return False
+    if len(material_paths) != len(parsed_contents):
+        return False
+
+    def _current_fingerprint(raw_path):
+        resolved = _resolve_storage_path(raw_path)
+        if not resolved or not resolved.exists() or not resolved.is_file():
+            return ''
+        st = resolved.stat()
+        return f'{st.st_size}:{int(st.st_mtime_ns)}'
+
+    normalized_material_paths = [_normalize_storage_path(p) for p in material_paths]
+    parsed_path_list = []
+    parsed_fingerprints = []
+    for item in parsed_contents:
+        if not isinstance(item, dict):
+            return False
+        raw_content = str(item.get('content') or '').strip()
+        if not raw_content:
+            return False
+        # 失败占位内容不应被当成有效缓存复用
+        if raw_content.startswith('(文件不存在') or raw_content.startswith('(解析失败'):
+            return False
+        parsed_path_list.append(_normalize_storage_path(item.get('path') or ''))
+        parsed_fingerprints.append(str(item.get('path_fingerprint') or '').strip())
+
+    if parsed_path_list != normalized_material_paths:
+        return False
+
+    # 旧缓存没有指纹时，强制失效并重跑，避免内容被覆盖后路径不变导致穿透
+    if any(not fp for fp in parsed_fingerprints):
+        return False
+
+    current_fingerprints = [_current_fingerprint(p) for p in material_paths]
+    return parsed_fingerprints == current_fingerprints
 
 
 def _resolve_storage_path(raw_path):
@@ -444,6 +493,22 @@ class Announcement(db.Model):
         }
 
 
+class MaintenanceConfig(db.Model):
+    """系统维护配置（单例）。"""
+    __tablename__ = 'maintenance_configs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    enabled = db.Column(db.Boolean, default=False)
+    title = db.Column(db.String(200), default='系统维护中')
+    content = db.Column(db.Text, default='')
+    start_at = db.Column(db.DateTime)
+    end_at = db.Column(db.DateTime)
+    updated_by = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='SET NULL'))
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    updater = db.relationship('User', foreign_keys=[updated_by], lazy=True)
+
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
@@ -561,6 +626,53 @@ def _to_utc_iso(dt):
     return dt.isoformat().replace('+00:00', 'Z')
 
 
+def _get_maintenance_config(create=False):
+    """读取维护配置（可选自动创建单例）。"""
+    cfg = MaintenanceConfig.query.order_by(MaintenanceConfig.id.asc()).first()
+    if not cfg and create:
+        cfg = MaintenanceConfig()
+        db.session.add(cfg)
+        db.session.commit()
+    return cfg
+
+
+def _is_maintenance_active(cfg, now_dt=None):
+    """判断维护是否生效。"""
+    if not cfg or not bool(cfg.enabled):
+        return False
+    now_dt = now_dt or datetime.now()
+    if cfg.start_at and now_dt < cfg.start_at:
+        return False
+    if cfg.end_at and now_dt > cfg.end_at:
+        return False
+    return True
+
+
+def _maintenance_to_dict(cfg):
+    """维护配置序列化。"""
+    if not cfg:
+        return {
+            'enabled': False,
+            'active': False,
+            'title': '系统维护中',
+            'content': '',
+            'start_at': None,
+            'end_at': None,
+            'updated_at': None,
+            'updated_by_email': None,
+        }
+    return {
+        'enabled': bool(cfg.enabled),
+        'active': _is_maintenance_active(cfg),
+        'title': (cfg.title or '系统维护中'),
+        'content': (cfg.content or ''),
+        'start_at': cfg.start_at.isoformat() if cfg.start_at else None,
+        'end_at': cfg.end_at.isoformat() if cfg.end_at else None,
+        'updated_at': _to_utc_iso(cfg.updated_at),
+        'updated_by_email': cfg.updater.email if cfg.updater else None,
+    }
+
+
 def _collect_active_task_dirs():
     """收集仍在处理中的任务目录，避免误删"""
     active_dirs = set()
@@ -571,6 +683,19 @@ def _collect_active_task_dirs():
             if task_dir:
                 active_dirs.add(str(Path(task_dir).resolve()))
     return active_dirs
+
+
+def _get_primary_admin_api_key():
+    """获取主管理员（admin）API Key；若不存在则回退到首个管理员。"""
+    try:
+        primary_admin = User.query.filter_by(email='admin', is_admin=True).first()
+        if not primary_admin:
+            primary_admin = User.query.filter_by(is_admin=True).order_by(User.id.asc()).first()
+        if not primary_admin:
+            return ''
+        return (primary_admin.get_api_key() or '').strip()
+    except Exception:
+        return ''
 
 
 def _ensure_task_work_dir(config_task_dir, task_id):
@@ -831,6 +956,41 @@ def sponsor_qr(provider):
 
 
 # ===================== Main Routes =====================
+
+@app.before_request
+def enforce_maintenance_mode():
+    """维护模式拦截：非管理员登录后仅可访问维护页与退出。"""
+    if not current_user.is_authenticated:
+        return None
+    if current_user.is_admin:
+        return None
+
+    cfg = _get_maintenance_config(create=False)
+    if not _is_maintenance_active(cfg):
+        return None
+
+    endpoint = (request.endpoint or '').strip()
+    if endpoint in ('static', 'logout', 'maintenance_page', 'favicon', 'healthz'):
+        return None
+
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'error': '系统维护中，请稍后再试',
+            'maintenance': _maintenance_to_dict(cfg)
+        }), 503
+
+    return redirect(url_for('maintenance_page'))
+
+
+@app.route('/maintenance')
+@login_required
+def maintenance_page():
+    """维护中提示页。"""
+    if current_user.is_admin:
+        return redirect(url_for('admin'))
+    cfg = _get_maintenance_config(create=False)
+    return render_template('maintenance.html', maintenance=_maintenance_to_dict(cfg))
+
 
 @app.route('/')
 def index():
@@ -1247,25 +1407,18 @@ def generate():
             resolved_example = _resolve_storage_path(material.example_path)
             if resolved_example and resolved_example.exists():
                 system_example_path = str(resolved_example)
-            # 若系统资料已有完整预解析缓存，则优先复用
-            if isinstance(material.parsed_contents, list) and material.parsed_contents:
+            # 若系统资料已有完整预解析缓存且路径严格匹配，则优先复用
+            if _can_reuse_preparsed_contents(material.material_paths or [], material.parsed_contents):
                 pre_parsed_contents = []
                 for i, item in enumerate(material.parsed_contents):
-                    if not isinstance(item, dict):
-                        pre_parsed_contents = None
-                        break
-                    content = (item.get('content') or '').strip()
-                    if not content:
-                        pre_parsed_contents = None
-                        break
                     # 生成阶段只依赖 page/content，path 仅用于调试展示
                     pre_parsed_contents.append({
                         'page': int(item.get('page') or (i + 1)),
                         'path': item.get('path') or '',
-                        'content': content,
+                        'content': (item.get('content') or '').strip(),
                     })
-                if pre_parsed_contents and len(pre_parsed_contents) != len(material_paths):
-                    pre_parsed_contents = None
+            else:
+                pre_parsed_contents = None
     
     # 如果没有系统资料或系统资料为空，使用用户上传的资料
     if not material_paths:
@@ -1307,6 +1460,8 @@ def generate():
     format_type = request.form.get('output_format', 'latex').lower()
     if format_type not in ['latex', 'word']:
         format_type = 'latex'
+    # 管理员测试模式：允许无数据生成，并用占位内容填充数据处理章节
+    test_mode = bool(current_user.is_admin and request.form.get('test_mode', '').strip() == '1')
 
     tasks[task_id] = {
         'status': 'processing', 'steps': [],
@@ -1327,6 +1482,7 @@ def generate():
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
         'pre_parsed_contents': pre_parsed_contents,
+        'test_mode': test_mode,
     }
     tasks[task_id]['config'] = config
 
@@ -1353,8 +1509,10 @@ def _extract_json_object(text):
     return text
 
 
-def _revise_sections_with_instruction(section_contents, instruction, config):
+def _revise_sections_with_instruction(section_contents, instruction, config, progress_cb=None):
     """根据用户修订意见，生成新的章节内容"""
+    if progress_cb:
+        progress_cb('正在初始化修订模型客户端...')
     client = OpenAI(api_key=config['api_key'], base_url=config['base_url'])
     section_json = json.dumps(section_contents, ensure_ascii=False)
     system_prompt = (
@@ -1378,6 +1536,8 @@ def _revise_sections_with_instruction(section_contents, instruction, config):
         # 通过 extra_body 透传厂商扩展参数，避免 SDK 关键字参数报错
         extra_body = {'thinking': {'type': 'disabled'}}
 
+    if progress_cb:
+        progress_cb('正在调用模型生成修订内容...')
     resp = client.chat.completions.create(
         model=config['text_model'],
         messages=[
@@ -1389,7 +1549,43 @@ def _revise_sections_with_instruction(section_contents, instruction, config):
         extra_body=extra_body,
     )
     raw = resp.choices[0].message.content or ''
-    obj = json.loads(_extract_json_object(raw))
+    if progress_cb:
+        progress_cb('正在解析修订结果...')
+    json_text = _extract_json_object(raw)
+    try:
+        obj = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        # 一次最小重试：让模型将其输出修复成严格 JSON，减少因引号/转义问题导致的失败
+        if progress_cb:
+            progress_cb('检测到返回格式异常，正在自动修复 JSON...')
+        repair_prompt = (
+            "你是 JSON 修复器。请将下面文本修复为严格合法的 JSON 对象。\n"
+            f"必须且只保留这些键：{KNOWN_SECTIONS}\n"
+            "每个键的值都必须是字符串。\n"
+            "不要输出解释，不要 markdown 代码块，只输出 JSON。\n\n"
+            f"原始文本：\n{raw}"
+        )
+        repair_resp = client.chat.completions.create(
+            model=config['text_model'],
+            messages=[{"role": "user", "content": repair_prompt}],
+            temperature=0.0,
+            max_tokens=8192,
+            extra_body=extra_body,
+        )
+        repaired_raw = repair_resp.choices[0].message.content or ''
+        repaired_json_text = _extract_json_object(repaired_raw)
+        try:
+            obj = json.loads(repaired_json_text)
+        except json.JSONDecodeError as e2:
+            err_pos = max(0, int(getattr(e2, 'pos', 0)))
+            snippet_start = max(0, err_pos - 60)
+            snippet_end = min(len(repaired_json_text), err_pos + 60)
+            snippet = repaired_json_text[snippet_start:snippet_end].replace('\n', '\\n')
+            raise ValueError(
+                f'修订结果 JSON 解析失败（{e2.msg}，位置 {e2.lineno}:{e2.colno}），'
+                f'附近内容: {snippet}'
+            ) from e2
+
     revised = {}
     for section_name in KNOWN_SECTIONS:
         value = obj.get(section_name, section_contents.get(section_name, ''))
@@ -1397,48 +1593,41 @@ def _revise_sections_with_instruction(section_contents, instruction, config):
     return revised
 
 
-@app.route('/api/revise/<task_id>', methods=['POST'])
-@login_required
-def revise_report(task_id):
-    """基于自然语言反馈修订报告并重新编译"""
+def _run_revision_task(task_id, instruction):
+    """后台执行修订任务，供 /api/revise 异步调用。"""
     task = tasks.get(task_id)
     if not task:
-        return jsonify({'error': '任务不存在'}), 404
-    if task.get('user_id') != current_user.id and not current_user.is_admin:
-        return jsonify({'error': '无权限操作该任务'}), 403
-    if task.get('status') != 'done':
-        return jsonify({'error': '仅可修订已完成的报告'}), 400
-    if not task.get('config'):
-        return jsonify({'error': '任务配置缺失，无法修订'}), 400
-    if not task.get('section_contents'):
-        return jsonify({'error': '未找到报告章节内容，无法修订'}), 400
+        return
 
-    data = request.get_json() or {}
-    instruction = (data.get('instruction') or '').strip()
-    if not instruction:
-        return jsonify({'error': '请填写修订意见'}), 400
+    def _update(step):
+        if task_id in tasks:
+            tasks[task_id]['steps'].append(step)
+            tasks[task_id]['current_step'] = step
 
     try:
-        task['status'] = 'processing'
-        task['current_step'] = '正在根据修订意见重写内容...'
-        task['steps'].append(task['current_step'])
-
         config = task['config']
+        _update('正在准备修订任务...')
         # 原始任务目录可能已被清理线程删除，修订前确保可用
         config['task_dir'] = _ensure_task_work_dir(config.get('task_dir'), task_id)
-        revised_sections = _revise_sections_with_instruction(task['section_contents'], instruction, config)
+
+        revised_sections = _revise_sections_with_instruction(
+            task['section_contents'],
+            instruction,
+            config,
+            progress_cb=_update,
+        )
         task['section_contents'] = revised_sections
 
         now_tag = int(time.time())
         format_type = config.get('format_type', 'latex')
-        task['current_step'] = '正在重新编译报告...'
-        task['steps'].append(task['current_step'])
+        _update('正在重新编译报告...')
 
         if format_type == 'word':
             word_path = build_word_document_from_template(
                 config['cover_info'], revised_sections, config['task_dir'],
                 config.get('raw_data_path'), config.get('material_paths'), config.get('plot_paths'),
-                append_raw_data_image=config.get('append_raw_data_image', False)
+                append_raw_data_image=config.get('append_raw_data_image', False),
+                progress_cb=_update,
             )
             out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.docx'
             out_path = OUTPUT_FOLDER / out_name
@@ -1475,27 +1664,53 @@ def revise_report(task_id):
                 task['status'] = 'error'
                 task['error'] = '修订后 LaTeX 编译失败，请下载源码检查。'
                 task['download_url'] = f'/api/download/{tex_save_name}'
-                return jsonify({'error': task['error'], 'download_url': task['download_url']}), 500
+                return
 
             task['download_url'] = f'/api/download/{out_name}'
             task['raw_url'] = f'/api/download/{raw_name}'
             task['tex_url'] = f'/api/download/{tex_save_name}'
 
         task['status'] = 'done'
-        task['current_step'] = '修订完成！'
-        task['steps'].append(task['current_step'])
-        return jsonify({
-            'success': True,
-            'download_url': task.get('download_url'),
-            'raw_url': task.get('raw_url'),
-            'tex_url': task.get('tex_url')
-        })
+        _update('修订完成！')
     except Exception as e:
         import traceback
         traceback.print_exc()
         task['status'] = 'error'
         task['error'] = f'修订失败: {str(e)}'
-        return jsonify({'error': task['error']}), 500
+
+
+@app.route('/api/revise/<task_id>', methods=['POST'])
+@login_required
+def revise_report(task_id):
+    """基于自然语言反馈修订报告并重新编译"""
+    task = tasks.get(task_id)
+    if not task:
+        return jsonify({'error': '任务不存在'}), 404
+    if task.get('user_id') != current_user.id and not current_user.is_admin:
+        return jsonify({'error': '无权限操作该任务'}), 403
+    if task.get('status') != 'done':
+        return jsonify({'error': '仅可修订已完成的报告'}), 400
+    if not task.get('config'):
+        return jsonify({'error': '任务配置缺失，无法修订'}), 400
+    if not task.get('section_contents'):
+        return jsonify({'error': '未找到报告章节内容，无法修订'}), 400
+
+    data = request.get_json() or {}
+    instruction = (data.get('instruction') or '').strip()
+    if not instruction:
+        return jsonify({'error': '请填写修订意见'}), 400
+
+    if task.get('status') == 'processing':
+        return jsonify({'error': '任务正在处理中，请稍后'}), 400
+
+    task['status'] = 'processing'
+    task['error'] = None
+    task['current_step'] = '已提交修订任务，等待开始...'
+    task['steps'].append(task['current_step'])
+
+    thread = threading.Thread(target=_run_revision_task, args=(task_id, instruction), daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'task_id': task_id})
 
 
 @app.route('/api/progress/<task_id>')
@@ -1566,6 +1781,39 @@ def admin_stats():
         'template_count': Template.query.count(),
         'material_count': SystemMaterial.query.count()
     })
+
+
+@app.route('/api/admin/maintenance', methods=['GET', 'POST'])
+@login_required
+def admin_maintenance():
+    """管理员获取/更新系统维护配置。"""
+    if not current_user.is_admin:
+        return jsonify({'error': '需要管理员权限'}), 403
+
+    cfg = _get_maintenance_config(create=True)
+    if request.method == 'GET':
+        return jsonify(_maintenance_to_dict(cfg))
+
+    data = request.get_json() or {}
+    enabled = bool(data.get('enabled', False))
+    title = (data.get('title') or '系统维护中').strip() or '系统维护中'
+    content = (data.get('content') or '').strip()
+    start_at = _parse_datetime_text(data.get('start_at'))
+    end_at = _parse_datetime_text(data.get('end_at'))
+
+    if (data.get('start_at') and not start_at) or (data.get('end_at') and not end_at):
+        return jsonify({'error': '维护时间格式无效，请重新选择'}), 400
+    if start_at and end_at and start_at > end_at:
+        return jsonify({'error': '维护开始时间不能晚于结束时间'}), 400
+
+    cfg.enabled = enabled
+    cfg.title = title[:200]
+    cfg.content = content
+    cfg.start_at = start_at
+    cfg.end_at = end_at
+    cfg.updated_by = current_user.id
+    db.session.commit()
+    return jsonify({'success': True, 'maintenance': _maintenance_to_dict(cfg)})
 
 
 @app.route('/api/admin/cleanup', methods=['POST'])
@@ -1678,102 +1926,124 @@ def admin_toggle_admin(user_id):
     })
 
 
-def _parse_system_material(material_id):
+def _parse_system_material(material_id, user_api_key=None):
     """
     后台预解析系统资料图片，缓存 Vision 识别结果。
     只做“追加能力”，不影响已有生成流程；失败时记录 parse_error。
     """
-    with app.app_context():
-        material = SystemMaterial.query.get(material_id)
-        if not material:
-            print(f"[预解析] 资料不存在: {material_id}")
-            return
-        paths = material.material_paths or []
-        
-        print(f"[预解析] 开始解析资料 '{material.experiment_name}', 图片数量: {len(paths)}")
-        
-        material.parse_status = 'parsing'
-        material.parse_total = len(paths)
-        material.parse_done = 0
-        material.parse_started_at = datetime.utcnow()
-        material.parse_finished_at = None
-        material.parse_error = None
-        db.session.commit()
+    with MATERIAL_PARSE_LOCK:
+        with app.app_context():
+            material = SystemMaterial.query.get(material_id)
+            if not material:
+                print(f"[预解析] 资料不存在: {material_id}")
+                return
+            paths = material.material_paths or []
 
-        if not paths:
-            material.parsed_contents = []
-            material.parsed_at = datetime.utcnow()
+            print(f"[预解析] 开始解析资料 '{material.experiment_name}', 图片数量: {len(paths)}")
+
+            material.parse_status = 'parsing'
+            material.parse_total = len(paths)
+            material.parse_done = 0
+            material.parse_started_at = datetime.utcnow()
+            material.parse_finished_at = None
             material.parse_error = None
-            material.parse_status = 'done'
-            material.parse_finished_at = datetime.utcnow()
             db.session.commit()
-            return
 
-        # 优先使用系统 API Key，回退到用户提供的 API Key
-        api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
-        if not api_key and user_api_key:
-            api_key = user_api_key.strip()
-            print(f"[预解析] 使用传入的 API Key 进行解析")
-        
-        if not api_key:
-            material.parse_error = '未配置 SYSTEM_API_KEY 或 MOONSHOT_API_KEY，且无用户 API Key，无法预解析'
-            material.parse_status = 'error'
-            material.parse_finished_at = datetime.utcnow()
-            db.session.commit()
-            print(f"[预解析] 错误: 未配置 API Key")
-            return
+            if not paths:
+                material.parsed_contents = []
+                material.parsed_at = datetime.utcnow()
+                material.parse_error = None
+                material.parse_status = 'done'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                return
 
-        base_url = (os.environ.get('SYSTEM_BASE_URL') or 'https://api.moonshot.cn/v1').strip()
-        # 使用32k vision模型
-        vision_model = (os.environ.get('VISION_MODEL') or 'moonshot-v1-32k-vision-preview').strip()
-        
-        print(f"[预解析] 使用 API: {base_url}, 模型: {vision_model}")
-        
-        client = OpenAI(api_key=api_key, base_url=base_url)
+            # 优先使用系统 API Key，回退到用户提供的 API Key
+            api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
+            if not api_key and user_api_key:
+                api_key = user_api_key.strip()
+                print(f"[预解析] 使用传入的 API Key 进行解析")
+            if not api_key:
+                admin_api_key = _get_primary_admin_api_key()
+                if admin_api_key:
+                    api_key = admin_api_key
+                    print("[预解析] 使用主管理员 API Key 进行解析")
 
-        try:
-            from ai_generator import extract_single_image
+            if not api_key:
+                material.parse_error = '未配置 SYSTEM_API_KEY/MOONSHOT_API_KEY，且无用户或主管理员 API Key，无法预解析'
+                material.parse_status = 'error'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                print(f"[预解析] 错误: 未配置 API Key")
+                return
 
-            parsed = []
-            for i, raw in enumerate(paths):
-                print(f"[预解析] 正在处理第 {i+1}/{len(paths)} 张图片: {raw}")
-                
-                resolved = _resolve_storage_path(raw)
-                if not resolved or not resolved.exists():
-                    print(f"[预解析] 文件不存在: {raw}")
-                    parsed.append({'page': i + 1, 'path': str(raw), 'content': '(文件不存在，跳过解析)'})
+            base_url = (os.environ.get('SYSTEM_BASE_URL') or 'https://api.moonshot.cn/v1').strip()
+            # 使用32k vision模型
+            vision_model = (os.environ.get('VISION_MODEL') or 'moonshot-v1-32k-vision-preview').strip()
+
+            print(f"[预解析] 使用 API: {base_url}, 模型: {vision_model}")
+
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+            try:
+                from ai_generator import extract_single_image
+
+                parsed = []
+                for i, raw in enumerate(paths):
+                    print(f"[预解析] 正在处理第 {i+1}/{len(paths)} 张图片: {raw}")
+
+                    resolved = _resolve_storage_path(raw)
+                    if not resolved or not resolved.exists():
+                        print(f"[预解析] 文件不存在: {raw}")
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': '',
+                            'content': '(文件不存在，跳过解析)',
+                        })
+                        material.parse_done = i + 1
+                        db.session.commit()
+                        continue
+
+                    try:
+                        content = extract_single_image(str(resolved), client, vision_model)
+                        st = resolved.stat()
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': f'{st.st_size}:{int(st.st_mtime_ns)}',
+                            'content': (content or '').strip(),
+                        })
+                        print(f"[预解析] 第 {i+1} 张图片解析完成，长度: {len(content or '')}")
+                    except Exception as img_err:
+                        print(f"[预解析] 第 {i+1} 张图片解析失败: {img_err}")
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': '',
+                            'content': f'(解析失败: {str(img_err)[:100]})',
+                        })
+
                     material.parse_done = i + 1
                     db.session.commit()
-                    continue
-                
-                try:
-                    content = extract_single_image(str(resolved), client, vision_model)
-                    parsed.append({'page': i + 1, 'path': str(raw), 'content': (content or '').strip()})
-                    print(f"[预解析] 第 {i+1} 张图片解析完成，长度: {len(content or '')}")
-                except Exception as img_err:
-                    print(f"[预解析] 第 {i+1} 张图片解析失败: {img_err}")
-                    parsed.append({'page': i + 1, 'path': str(raw), 'content': f'(解析失败: {str(img_err)[:100]})'})
-                
-                material.parse_done = i + 1
-                db.session.commit()
-                if i < len(paths) - 1:
-                    time.sleep(0.5)
+                    if i < len(paths) - 1:
+                        time.sleep(0.5)
 
-            material.parsed_contents = parsed
-            material.parsed_at = datetime.utcnow()
-            material.parse_error = None
-            material.parse_status = 'done'
-            material.parse_finished_at = datetime.utcnow()
-            db.session.commit()
-            print(f"[预解析] 资料 '{material.experiment_name}' 解析完成")
-        except Exception as e:
-            print(f"[预解析] 解析过程出错: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            material.parse_error = f'{type(e).__name__}: {str(e)[:200]}'
-            material.parse_status = 'error'
-            material.parse_finished_at = datetime.utcnow()
-            db.session.commit()
+                material.parsed_contents = parsed
+                material.parsed_at = datetime.utcnow()
+                material.parse_error = None
+                material.parse_status = 'done'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                print(f"[预解析] 资料 '{material.experiment_name}' 解析完成")
+            except Exception as e:
+                print(f"[预解析] 解析过程出错: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                material.parse_error = f'{type(e).__name__}: {str(e)[:200]}'
+                material.parse_status = 'error'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
 
 
 @app.route('/api/admin/materials', methods=['GET', 'POST'])
@@ -1806,8 +2076,8 @@ def admin_materials():
         default_cover = {}
     default_cover['category'] = category
     
-    # 保存上传的文件
-    task_dir = UPLOAD_FOLDER / f"material_{int(time.time())}"
+    # 保存上传的文件（使用 UUID 隔离目录，避免同秒上传导致跨实验覆盖）
+    task_dir = UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}"
     task_dir.mkdir(parents=True, exist_ok=True)
     
     material_paths = []
@@ -1897,11 +2167,13 @@ def admin_material_parse(material_id):
         return jsonify({'error': '需要管理员权限'}), 403
     material = SystemMaterial.query.get_or_404(material_id)
     
-    # 获取当前管理员的 API Key 用于预解析
+    # 系统 API Key 与管理员 API Key 至少提供一个即可
     user_api_key = current_user.get_api_key()
-    if not user_api_key:
-        return jsonify({'error': '请先在首页设置 Moonshot API Key 才能使用预解析功能'}), 400
-    
+    system_api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
+    primary_admin_api_key = _get_primary_admin_api_key()
+    if not system_api_key and not user_api_key and not primary_admin_api_key:
+        return jsonify({'error': '请先配置 SYSTEM_API_KEY/MOONSHOT_API_KEY，或在首页设置管理员/主管理员 API Key'}), 400
+
     parse_thread = threading.Thread(target=_parse_system_material, args=(material.id, user_api_key), daemon=True)
     parse_thread.start()
     return jsonify({'success': True, 'message': '预解析任务已启动'})

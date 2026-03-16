@@ -526,7 +526,9 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
         '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
         '%%COVER_STUDENT_ID%%': cover_info.get('student_id', ''),
         '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_TEAM_NUMBER%%': cover_info.get('group_number', ''),
         '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
+        '%%COVER_EXPERIMENT_DATA%%': cover_info.get('experiment_date', ''),
     }
     
     # 处理章节占位符
@@ -647,7 +649,9 @@ def fill_cover_info_in_template(doc, cover_info):
         '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
         '%%COVER_STUDENT_ID%%': cover_info.get('student_id', ''),
         '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_TEAM_NUMBER%%': cover_info.get('group_number', ''),
         '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
+        '%%COVER_EXPERIMENT_DATA%%': cover_info.get('experiment_date', ''),
     }
 
     # 标签规则（用于没有占位符的情况）
@@ -669,80 +673,120 @@ def fill_cover_info_in_template(doc, cover_info):
             first_section_idx = idx
             break
 
-    # 遍历封面区域的段落，替换占位符或标签
-    # 使用 list() 创建副本避免修改时影响迭代
+    def _replace_placeholder_in_runs(runs, placeholder, value):
+        """仅替换占位符文本，尽量保留原有 run 样式（如下划线横线、字体）。"""
+        replaced = False
+        for run in runs:
+            if placeholder in (run.text or ''):
+                run.text = (run.text or '').replace(placeholder, value or '')
+                replaced = True
+        return replaced
+
+    def _replace_placeholder_in_paragraph(para, placeholder, value):
+        """优先按 run 替换；占位符跨 run 时仅替换命中区间，保留其余 run 样式。"""
+        full_text = ''.join(run.text for run in para.runs)
+        if placeholder not in full_text:
+            return False
+        if _replace_placeholder_in_runs(para.runs, placeholder, value):
+            return True
+        # 占位符被拆分到多个 run：只改占位符覆盖的 run，避免吞掉后续下划线 run
+        runs = list(para.runs)
+        if not runs:
+            para.add_run(full_text.replace(placeholder, value or ''))
+            return True
+
+        start = full_text.find(placeholder)
+        end = start + len(placeholder)
+
+        spans = []
+        cursor = 0
+        for idx, run in enumerate(runs):
+            text = run.text or ''
+            spans.append((idx, cursor, cursor + len(text)))
+            cursor += len(text)
+
+        start_run_idx = None
+        end_run_idx = None
+        for idx, s, e in spans:
+            if start_run_idx is None and s <= start < e:
+                start_run_idx = idx
+            if s < end <= e:
+                end_run_idx = idx
+                break
+
+        if start_run_idx is None or end_run_idx is None:
+            # 理论不应发生；保底不清空其他 run
+            runs[0].text = full_text.replace(placeholder, value or '')
+            return True
+
+        start_run = runs[start_run_idx]
+        end_run = runs[end_run_idx]
+        start_run_abs = spans[start_run_idx][1]
+        end_run_abs = spans[end_run_idx][1]
+
+        prefix = (start_run.text or '')[: start - start_run_abs]
+        suffix = (end_run.text or '')[end - end_run_abs :]
+
+        if start_run_idx == end_run_idx:
+            start_run.text = prefix + (value or '') + suffix
+            return True
+
+        start_run.text = prefix + (value or '')
+        for i in range(start_run_idx + 1, end_run_idx):
+            runs[i].text = ''
+        end_run.text = suffix
+        return True
+
+    # 遍历封面区域的段落，替换占位符或标签（不清空原 run，避免破坏横线/字体）
     for idx, para in enumerate(list(doc.paragraphs)):
         if idx >= first_section_idx:
             break
 
         full_text = ''.join(run.text for run in para.runs)
 
-        # 1. 先尝试替换占位符（即使值为空也要替换，清除占位符）
+        # 1) 优先替换占位符
         placeholder_found = False
         for placeholder, value in cover_placeholders.items():
             if placeholder in full_text:
-                # 清空所有 run 的文本
-                for run in para.runs:
-                    run.text = ''
-                # 替换占位符并设置到第一个 run
-                new_text = full_text.replace(placeholder, value or '')
-                if para.runs:
-                    para.runs[0].text = new_text
-                placeholder_found = True
-                break  # 每段只处理一个占位符
+                placeholder_found = _replace_placeholder_in_paragraph(para, placeholder, value)
+                break
 
-        # 2. 如果没有找到占位符，尝试匹配标签
+        # 2) 无占位符时，识别标签并仅追加值，不改动现有装饰
         if not placeholder_found:
             normalized = _normalize_label(full_text)
             if normalized in label_rules:
-                field_key, display_label = label_rules[normalized]
+                field_key, _display_label = label_rules[normalized]
                 value = (cover_info.get(field_key) or '').strip()
-                # 清空并添加新内容（即使值为空也要清除原标签）
-                for run in para.runs:
-                    run.text = ''
-                label_run = para.add_run(f'{display_label}    ')
-                set_chinese_font(label_run, '黑体', 12, bold=True)
-                if value:
-                    value_run = para.add_run(value)
+                if value and value not in full_text:
+                    value_run = para.add_run(f' {value}')
                     set_chinese_font(value_run, '宋体', 12)
 
     # 处理表格中的封面信息
     for table in doc.tables:
-        # 只检查表格前几行（通常封面信息在表格中）
         for row_idx, row in enumerate(table.rows):
             if row_idx > 3:  # 只检查前几行
                 break
             for cell in row.cells:
                 cell_text = ''.join(run.text for para in cell.paragraphs for run in para.runs)
 
-                # 1. 先检查占位符（即使值为空也要替换）
+                # 1) 替换占位符（保持单元格原格式）
                 placeholder_found = False
                 for placeholder, value in cover_placeholders.items():
                     if placeholder in cell_text:
-                        # 清空单元格
                         for para in cell.paragraphs:
-                            for run in para.runs:
-                                run.text = ''
-                        if cell.paragraphs:
-                            new_text = cell_text.replace(placeholder, value or '')
-                            cell.paragraphs[0].add_run(new_text)
-                        placeholder_found = True
+                            if _replace_placeholder_in_paragraph(para, placeholder, value):
+                                placeholder_found = True
                         break
 
-                # 2. 检查标签
+                # 2) 标签模式：仅追加值，避免清空单元格后格式丢失
                 if not placeholder_found:
                     normalized = _normalize_label(cell_text)
-                    if normalized in label_rules:
-                        field_key, display_label = label_rules[normalized]
+                    if normalized in label_rules and cell.paragraphs:
+                        field_key, _display_label = label_rules[normalized]
                         value = (cover_info.get(field_key) or '').strip()
-                        for para in cell.paragraphs:
-                            for run in para.runs:
-                                run.text = ''
-                        if cell.paragraphs:
-                            if value:
-                                cell.paragraphs[0].add_run(f'{display_label}    {value}')
-                            else:
-                                cell.paragraphs[0].add_run(display_label)
+                        if value and value not in cell_text:
+                            value_run = cell.paragraphs[0].add_run(f' {value}')
+                            set_chinese_font(value_run, '宋体', 12)
 
 
 def strip_template_section_skeleton(doc):

@@ -1317,40 +1317,160 @@ function editMaterial(id) {
   const material = materials.find(m => m.id === id);
   if (!material) return;
   
-  // Simple prompt-based edit for now
-  const newName = prompt('修改实验名称:', material.experiment_name);
-  if (newName === null) return;
-
-  const newCategory = prompt('修改分类（如：大物上/大物下）:', material.category || '未分类');
-  if (newCategory === null) return;
+  const existingCount = material.material_count || 0;
   
-  const newDesc = prompt('修改描述:', material.description || '');
-  if (newDesc === null) return;
+  const modalHtml = `
+    <div class="modal active" id="editMaterialModal" style="display:flex">
+      <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto">
+        <div class="modal-header">
+          <h3>编辑实验资料</h3>
+          <p>修改 ${material.experiment_name} 的信息</p>
+        </div>
+        <form id="editMaterialForm" onsubmit="submitEditMaterial(event, ${id})">
+          <div class="detail-row">
+            <label>实验名称 *</label>
+            <input type="text" name="experiment_name" required 
+              value="${material.experiment_name}" 
+              style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+          </div>
+          <div class="detail-row">
+            <label>实验分类 *</label>
+            <select name="category" required style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+              <option value="大物上" ${material.category === '大物上' ? 'selected' : ''}>大物上</option>
+              <option value="大物下" ${material.category === '大物下' ? 'selected' : ''}>大物下</option>
+              <option value="其他" ${material.category === '其他' ? 'selected' : ''}>其他</option>
+            </select>
+          </div>
+          <div class="detail-row">
+            <label>描述</label>
+            <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" 
+              placeholder="实验简介...">${material.description || ''}</textarea>
+          </div>
+          <div class="detail-row">
+            <label style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" name="is_active" ${material.is_active ? 'checked' : ''}> 
+              启用此资料
+            </label>
+          </div>
+          <div class="detail-row" style="background:#f0f9ff;padding:12px;border-radius:6px;">
+            <div style="font-weight:500;margin-bottom:8px;">📷 追加新图片</div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">
+              已有 ${existingCount} 张图片，可选择追加更多图片
+            </div>
+            <input type="file" name="new_materials" multiple accept="image/*" 
+              style="font-size:13px" 
+              onchange="updateEditFilePreview(this, ${existingCount})">
+            <div id="editFilesPreview" style="margin-top:8px;font-size:12px;color:var(--text2);"></div>
+          </div>
+          <div class="modal-footer" style="margin-top:20px">
+            <button type="button" class="btn-cancel" onclick="closeEditModal()">取消</button>
+            <button type="submit" class="btn-confirm" style="background:var(--primary)">保存修改</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
   
-  const isActive = confirm('是否启用此资料?\n确定=启用, 取消=禁用');
+  // Remove existing modal if any
+  const existing = document.getElementById('editMaterialModal');
+  if (existing) existing.remove();
   
-  updateMaterial(id, newName, newCategory, newDesc, isActive);
+  // Add new modal
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
 }
 
-async function updateMaterial(id, name, category, desc, isActive) {
+function closeEditModal() {
+  const modal = document.getElementById('editMaterialModal');
+  if (modal) modal.remove();
+}
+
+function updateEditFilePreview(input, existingCount) {
+  const preview = document.getElementById('editFilesPreview');
+  if (!input.files || input.files.length === 0) {
+    preview.innerHTML = '';
+    return;
+  }
+  
+  let html = '<div style="margin-top:6px;">将追加的文件：</div>';
+  const oversized = [];
+  let totalNewSize = 0;
+  
+  for (const f of input.files) {
+    const sizeMB = f.size / (1024 * 1024);
+    totalNewSize += f.size;
+    const isOversized = sizeMB > MAX_ADMIN_IMAGE_SIZE_MB;
+    const color = isOversized ? 'var(--error)' : 'var(--success)';
+    const warning = isOversized ? ' (超过 20MB!)' : '';
+    
+    html += `<div style="color:${color};margin:2px 0;">• ${f.name} (${formatAdminFileSize(f.size)})${warning}</div>`;
+    if (isOversized) oversized.push(f.name);
+  }
+  
+  html += `<div style="margin-top:6px;font-weight:500;">新增: ${input.files.length} 张 (${formatAdminFileSize(totalNewSize)})</div>`;
+  html += `<div style="margin-top:4px;">编辑后总共: ${existingCount + input.files.length} 张图片</div>`;
+  
+  if (oversized.length > 0) {
+    html += `<div style="color:var(--error);margin-top:8px;">⚠️ ${oversized.length} 个文件超过 20MB</div>`;
+  }
+  
+  preview.innerHTML = html;
+}
+
+async function submitEditMaterial(e, id) {
+  e.preventDefault();
+  
+  const form = document.getElementById('editMaterialForm');
+  const newFilesInput = form.querySelector('[name="new_materials"]');
+  const newFiles = newFilesInput ? newFilesInput.files : [];
+  
+  // 检查文件大小
+  const oversized = [];
+  for (const f of newFiles) {
+    if (f.size / (1024 * 1024) > MAX_ADMIN_IMAGE_SIZE_MB) {
+      oversized.push(f.name);
+    }
+  }
+  
+  if (oversized.length > 0) {
+    alert(`以下文件超过 20MB 限制:\n${oversized.join('\n')}`);
+    return;
+  }
+  
   try {
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    
     const fd = new FormData();
-    fd.append('experiment_name', name);
-    fd.append('category', category || '未分类');
-    fd.append('description', desc);
-    fd.append('is_active', isActive ? 'true' : 'false');
+    fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
+    fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('category', form.querySelector('[name="category"]').value);
+    fd.append('is_active', form.querySelector('[name="is_active"]').checked ? 'true' : 'false');
+    fd.append('append_mode', 'true');
+    
+    // 添加新图片
+    for (const f of newFiles) {
+      fd.append('materials', f);
+    }
     
     const res = await fetch(`/api/admin/materials/${id}`, { method: 'PUT', body: fd });
     const data = await res.json();
     
     if (res.ok) {
-      alert('资料已更新');
-      loadMaterials();
+      const msg = data.warning ? `已保存，但 ${data.warning}` : '修改已保存！';
+      alert(msg);
+      closeEditModal();
+      loadMaterialsData();
     } else {
-      alert(data.error || '更新失败');
+      alert(data.error || '保存失败');
+      btn.disabled = false;
+      btn.textContent = '保存修改';
     }
   } catch (e) {
-    alert('更新失败: ' + e.message);
+    alert('保存失败: ' + e.message);
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = false;
+    btn.textContent = '保存修改';
   }
 }
 
@@ -1387,8 +1507,9 @@ function showUploadMaterialModal() {
             <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" placeholder="实验简介..."></textarea>
           </div>
           <div class="detail-row">
-            <label>实验资料图片 * (支持多张)</label>
-            <input type="file" name="materials" multiple accept="image/*" required style="font-size:13px">
+            <label>实验资料图片 * (支持多张, 单张不超过 20MB)</label>
+            <input type="file" name="materials" multiple accept="image/*" required style="font-size:13px" onchange="updateMaterialFilePreview(this)">
+            <div id="materialFilesPreview" style="margin-top:8px;font-size:12px;color:var(--text2);"></div>
           </div>
           <div class="detail-row">
             <label>参考样例 (.docx) - 可选</label>
@@ -1420,26 +1541,110 @@ function closeUploadModal() {
   if (modal) modal.remove();
 }
 
+const MAX_ADMIN_IMAGE_SIZE_MB = 20;
+
+function formatAdminFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function updateMaterialFilePreview(input) {
+  const preview = document.getElementById('materialFilesPreview');
+  if (!input.files || input.files.length === 0) {
+    preview.innerHTML = '';
+    return;
+  }
+  
+  let html = '<div style="margin-top:6px;">已选文件：</div>';
+  const oversized = [];
+  
+  for (const f of input.files) {
+    const sizeMB = f.size / (1024 * 1024);
+    const isOversized = sizeMB > MAX_ADMIN_IMAGE_SIZE_MB;
+    const color = isOversized ? 'var(--error)' : 'var(--success)';
+    const warning = isOversized ? ' (超过 20MB!)' : '';
+    
+    html += `<div style="color:${color};margin:2px 0;">• ${f.name} (${formatAdminFileSize(f.size)})${warning}</div>`;
+    if (isOversized) oversized.push(f.name);
+  }
+  
+  if (oversized.length > 0) {
+    html += `<div style="color:var(--error);margin-top:8px;">⚠️ ${oversized.length} 个文件超过 20MB，建议压缩后再上传</div>`;
+  }
+  
+  preview.innerHTML = html;
+}
+
 async function submitMaterialUpload(e) {
   e.preventDefault();
   
   const form = document.getElementById('uploadMaterialForm');
-  const fd = new FormData(form);
+  const materialsInput = form.querySelector('[name="materials"]');
+  const materials = materialsInput.files;
   
   // Check if at least materials are provided
-  const materials = form.querySelector('[name="materials"]').files;
   if (materials.length === 0) {
     alert('请至少上传一个实验资料图片');
     return;
   }
   
+  // Check file sizes
+  const oversized = [];
+  for (const f of materials) {
+    if (f.size / (1024 * 1024) > MAX_ADMIN_IMAGE_SIZE_MB) {
+      oversized.push(`${f.name} (${(f.size / (1024 * 1024)).toFixed(1)}MB)`);
+    }
+  }
+  
+  if (oversized.length > 0) {
+    alert(`以下文件超过 20MB 限制，请压缩后重新上传:\n\n${oversized.join('\n')}\n\n您可以使用图片压缩工具减小文件大小。`);
+    return;
+  }
+  
   try {
     const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = '上传中...';
+    const totalSize = Array.from(materials).reduce((sum, f) => sum + f.size, 0);
+    const totalSizeText = formatAdminFileSize(totalSize);
     
-    const res = await fetch('/api/admin/materials', { method: 'POST', body: fd });
-    const data = await res.json();
+    btn.disabled = true;
+    btn.textContent = `正在上传 ${materials.length} 个文件 (${totalSizeText})...`;
+    
+    // 构建 FormData 确保所有文件都被正确添加
+    const fd = new FormData();
+    fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
+    fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('category', form.querySelector('[name="category"]').value);
+    fd.append('default_cover', form.querySelector('[name="default_cover"]').value);
+    
+    // 逐个添加文件
+    for (const f of materials) {
+      fd.append('materials', f);
+    }
+    
+    // 添加参考样例（如果有）
+    const exampleInput = form.querySelector('[name="example"]');
+    if (exampleInput && exampleInput.files && exampleInput.files.length > 0) {
+      fd.append('example', exampleInput.files[0]);
+    }
+    
+    console.log(`[upload] Sending ${materials.length} files, total size: ${totalSizeText}`);
+    
+    const res = await fetch('/api/admin/materials', { 
+      method: 'POST', 
+      body: fd
+    });
+    
+    console.log(`[upload] Response status: ${res.status}`);
+    
+    let data;
+    try {
+      data = await res.json();
+    } catch (parseErr) {
+      const text = await res.text();
+      console.error('[upload] Failed to parse response:', text);
+      throw new Error(`服务器返回无效响应: ${text.substring(0, 200)}`);
+    }
     
     if (res.ok) {
       alert('资料上传成功！');
@@ -1447,12 +1652,13 @@ async function submitMaterialUpload(e) {
       loadMaterialsData();
       loadStats();
     } else {
-      alert(data.error || '上传失败');
+      alert(data.error || `上传失败 (HTTP ${res.status})`);
       btn.disabled = false;
       btn.textContent = '上传';
     }
   } catch (e) {
-    alert('上传失败: ' + e.message);
+    console.error('[upload] Error:', e);
+    alert('上传失败: ' + (e.message || '网络错误'));
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = false;
     btn.textContent = '上传';

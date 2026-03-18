@@ -12,6 +12,7 @@ from flask import Flask, request, jsonify, send_file, render_template, Response,
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user, UserMixin
 from sqlalchemy import text, inspect, or_
+from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from openai import OpenAI
@@ -928,33 +929,6 @@ def favicon():
     return resp
 
 
-@app.route('/api/sponsor/qr/<provider>')
-@login_required
-def sponsor_qr(provider):
-    """读取赞助二维码图片（由环境变量指定文件路径）。"""
-    key_map = {
-        'wechat': 'SPONSOR_WECHAT_QR_PATH',
-        'alipay': 'SPONSOR_ALIPAY_QR_PATH',
-    }
-    env_key = key_map.get(provider)
-    if not env_key:
-        return jsonify({'error': '无效的赞助类型'}), 400
-
-    raw_path = os.environ.get(env_key, '').strip()
-    if not raw_path:
-        return jsonify({'error': '二维码未配置'}), 404
-
-    try:
-        qr_path = Path(raw_path).expanduser().resolve()
-    except Exception:
-        return jsonify({'error': '二维码路径无效'}), 400
-
-    if not qr_path.exists() or not qr_path.is_file():
-        return jsonify({'error': '二维码文件不存在'}), 404
-
-    return send_file(str(qr_path))
-
-
 # ===================== Main Routes =====================
 
 @app.before_request
@@ -1008,20 +982,11 @@ def index():
     
     # 获取用户保存的参考样例
     user_examples = UserExample.query.filter_by(user_id=current_user.id).all()
-    sponsor_wechat = os.environ.get('SPONSOR_WECHAT_ACCOUNT', '').strip()
-    sponsor_alipay = os.environ.get('SPONSOR_ALIPAY_ACCOUNT', '').strip()
-    sponsor_wechat_qr_path = os.environ.get('SPONSOR_WECHAT_QR_PATH', '').strip()
-    sponsor_alipay_qr_path = os.environ.get('SPONSOR_ALIPAY_QR_PATH', '').strip()
-
     return render_template('index.html',
                           system_experiments=system_experiments,
                           system_experiments_data=system_experiments_data,
                           user_api_key=user_api_key,
-                          user_examples=user_examples,
-                          sponsor_wechat=sponsor_wechat,
-                          sponsor_alipay=sponsor_alipay,
-                          sponsor_wechat_qr_enabled=bool(sponsor_wechat_qr_path),
-                          sponsor_alipay_qr_enabled=bool(sponsor_alipay_qr_path))
+                          user_examples=user_examples)
 
 
 @app.route('/admin')
@@ -1283,7 +1248,11 @@ def get_feedback_image():
 def get_system_materials():
     """获取系统实验资料列表（公开接口）"""
     materials = SystemMaterial.query.filter_by(is_active=True).all()
-    return jsonify([m.to_dict() for m in materials])
+    resp = jsonify([m.to_dict() for m in materials])
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @app.route('/api/system/materials/<int:material_id>')
@@ -1292,8 +1261,8 @@ def get_system_material_detail(material_id):
     material = SystemMaterial.query.get_or_404(material_id)
     if not material.is_active:
         return jsonify({'error': '该资料已禁用'}), 403
-    
-    return jsonify({
+
+    resp = jsonify({
         'id': material.id,
         'experiment_name': material.experiment_name,
         'category': material.get_category(),
@@ -1302,6 +1271,10 @@ def get_system_material_detail(material_id):
         'material_count': len(material.material_paths) if material.material_paths else 0,
         'has_example': bool(material.example_path)
     })
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @app.route('/api/announcements/latest')
@@ -1457,11 +1430,11 @@ def generate():
     append_raw_data_image = bool(raw_data_path and has_structured_data_files)
 
     # 获取输出格式（latex 或 word）
-    format_type = request.form.get('output_format', 'latex').lower()
+    format_type = request.form.get('output_format', 'word').lower()
     if format_type not in ['latex', 'word']:
         format_type = 'latex'
-    # 管理员测试模式：允许无数据生成，并用占位内容填充数据处理章节
-    test_mode = bool(current_user.is_admin and request.form.get('test_mode', '').strip() == '1')
+    # 框架模式（无数据生成）：允许无数据生成，并用占位内容填充数据处理章节
+    framework_mode = bool(request.form.get('framework_mode', '').strip() == '1')
 
     tasks[task_id] = {
         'status': 'processing', 'steps': [],
@@ -1482,7 +1455,7 @@ def generate():
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
         'pre_parsed_contents': pre_parsed_contents,
-        'test_mode': test_mode,
+        'framework_mode': framework_mode,
     }
     tasks[task_id]['config'] = config
 
@@ -2080,13 +2053,41 @@ def admin_materials():
     task_dir = UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}"
     task_dir.mkdir(parents=True, exist_ok=True)
     
+    MAX_IMAGE_SIZE_MB = 20  # 单张图片最大 20MB
     material_paths = []
-    for f in request.files.getlist('materials'):
+    skipped_files = []
+    
+    # 调试日志
+    all_files = request.files.getlist('materials')
+    app.logger.info(f"[admin-upload] Received {len(all_files)} files for '{experiment_name}'")
+    
+    for f in all_files:
         if f.filename:
-            safe = f"material_{len(material_paths)}_{_safe_upload_name(f.filename, 'material')}"
-            p = task_dir / safe
-            f.save(p)
-            material_paths.append(_to_storage_path(p))
+            # 检查文件大小 - 使用安全的方式
+            try:
+                # 读取内容到内存以获取大小，然后重新包装
+                content = f.read()
+                file_size_mb = len(content) / (1024 * 1024)
+                
+                if file_size_mb > MAX_IMAGE_SIZE_MB:
+                    skipped_files.append(f"{f.filename} ({file_size_mb:.1f}MB)")
+                    continue
+                
+                # 保存文件
+                safe = f"material_{len(material_paths)}_{_safe_upload_name(f.filename, 'material')}"
+                p = task_dir / safe
+                with open(p, 'wb') as dest:
+                    dest.write(content)
+                material_paths.append(_to_storage_path(p))
+            except Exception as e:
+                app.logger.error(f"[admin-upload] Failed to process file {f.filename}: {e}")
+                skipped_files.append(f"{f.filename} (处理失败: {str(e)[:50]})")
+    
+    if skipped_files:
+        return jsonify({'error': f"以下文件超过 {MAX_IMAGE_SIZE_MB}MB 限制或处理失败:\n" + "\n".join(skipped_files)}), 400
+    
+    if not material_paths:
+        return jsonify({'error': '没有有效文件被上传'}), 400
     
     example_path = None
     example_file = request.files.get('example')
@@ -2151,11 +2152,73 @@ def admin_material_detail(material_id):
 
     # 支持单独更新分类
     if category:
-        if not isinstance(material.default_cover, dict):
-            material.default_cover = {}
-        material.default_cover['category'] = category
+        # 重要：JSON 字段需要“新对象赋值 + 标记修改”，避免 ORM 漏检更新
+        current_cover = material.default_cover
+        if isinstance(current_cover, str):
+            try:
+                current_cover = json.loads(current_cover) if current_cover else {}
+            except Exception:
+                current_cover = {}
+        if not isinstance(current_cover, dict):
+            current_cover = {}
+        new_cover = dict(current_cover)
+        new_cover['category'] = category
+        material.default_cover = new_cover
+        flag_modified(material, 'default_cover')
 
+    # 追加新图片（如果上传了）
+    append_mode = request.form.get('append_mode') == 'true'
+    material_files = request.files.getlist('materials')
+    
+    if material_files and any(f.filename for f in material_files):
+        # 获取现有资料的目录
+        existing_paths = material.material_paths or []
+        if existing_paths:
+            # 使用第一个现有文件的目录
+            first_path = _resolve_storage_path(existing_paths[0])
+            task_dir = first_path.parent if first_path else (UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}")
+        else:
+            task_dir = UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}"
+        
+        task_dir.mkdir(parents=True, exist_ok=True)
+        
+        MAX_IMAGE_SIZE_MB = 20
+        new_paths = []
+        skipped_files = []
+        
+        for f in material_files:
+            if f.filename:
+                try:
+                    content = f.read()
+                    file_size_mb = len(content) / (1024 * 1024)
+                    
+                    if file_size_mb > MAX_IMAGE_SIZE_MB:
+                        skipped_files.append(f"{f.filename} ({file_size_mb:.1f}MB)")
+                        continue
+                    
+                    safe = f"material_{len(existing_paths) + len(new_paths)}_{_safe_upload_name(f.filename, 'material')}"
+                    p = task_dir / safe
+                    with open(p, 'wb') as dest:
+                        dest.write(content)
+                    new_paths.append(_to_storage_path(p))
+                except Exception as e:
+                    app.logger.error(f"[admin-update] Failed to process file {f.filename}: {e}")
+                    skipped_files.append(f"{f.filename} (处理失败)")
+        
+        if new_paths:
+            # 追加到现有路径
+            material.material_paths = existing_paths + new_paths
+            app.logger.info(f"[admin-update] Appended {len(new_paths)} images to material {material_id}")
+    
+    # 先提交基本信息的修改（分类、名称等）
     db.session.commit()
+    
+    # 如果有文件上传失败，在这里返回警告（但基本信息已保存）
+    if material_files and any(f.filename for f in material_files):
+        skipped_files = locals().get('skipped_files', [])
+        if skipped_files:
+            return jsonify({'success': True, 'warning': f"部分文件上传失败: {', '.join(skipped_files)}"}), 200
+    
     return jsonify({'success': True})
 
 

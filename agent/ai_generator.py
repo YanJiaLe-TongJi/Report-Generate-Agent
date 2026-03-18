@@ -791,9 +791,9 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             f"=== 资料第{ic['page']}页 ===\n{ic['content']}" for ic in image_contents
         )
 
-        test_mode = bool(config.get('test_mode'))
-        if test_mode:
-            _update(task_id, '管理员测试模式：跳过实验数据解析与绘图', tasks_dict)
+        framework_mode = bool(config.get('framework_mode'))
+        if framework_mode:
+            _update(task_id, '框架模式：跳过实验数据解析与绘图', tasks_dict)
             data_paths = config.get('data_paths') or []
             data_text = ''
             plot_infos = []
@@ -943,7 +943,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         # 数据处理章节只使用分配给它或原始数据相关的图片
         data_section_materials = build_section_materials(data_sec, materials_text, image_section_mapping, image_contents)
         data_example = example_sections.get(data_sec, '')
-        if test_mode:
+        if framework_mode:
             if format_type == 'latex':
                 data_content = (
                     "为便于测试，本节使用占位内容。\n"

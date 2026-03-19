@@ -1414,20 +1414,21 @@ def generate():
     if system_example_path and not example_paths:
         example_paths = [system_example_path]
     
-    # 处理原始数据记录单（单张图片）
-    raw_data_path = None
-    raw_data_file = request.files.get('raw_data')
-    if raw_data_file and raw_data_file.filename:
-        safe = f"raw_data_{_safe_upload_name(raw_data_file.filename, 'raw_data')}"
-        p = task_dir / safe
-        raw_data_file.save(p)
-        raw_data_path = str(p)
+    # 处理原始数据记录单（支持多张图片）
+    raw_data_paths = []
+    for idx, raw_data_file in enumerate(request.files.getlist('raw_data')):
+        if raw_data_file and raw_data_file.filename:
+            safe = f"raw_data_{idx}_{_safe_upload_name(raw_data_file.filename, 'raw_data')}"
+            p = task_dir / safe
+            raw_data_file.save(p)
+            raw_data_paths.append(str(p))
+
 
     # 仅在“没有上传 Excel/CSV 数据文件”时，才允许识别原始数据记录单；
     # 若同时上传了数据文件，则只在报告末尾附上原始数据记录单，不做 OCR 识别。
     has_structured_data_files = bool(data_paths)
-    use_raw_data_ocr = bool(raw_data_path and not has_structured_data_files)
-    append_raw_data_image = bool(raw_data_path and has_structured_data_files)
+    use_raw_data_ocr = bool(raw_data_paths and not has_structured_data_files)
+    append_raw_data_image = bool(raw_data_paths and has_structured_data_files)
 
     # 获取输出格式（latex 或 word）
     format_type = request.form.get('output_format', 'word').lower()
@@ -1451,7 +1452,7 @@ def generate():
         'example_paths': example_paths, 'cover_info': cover_info,
         'task_dir': str(task_dir),
         'format_type': format_type,
-        'raw_data_path': raw_data_path,
+        'raw_data_paths': raw_data_paths,
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
         'pre_parsed_contents': pre_parsed_contents,
@@ -1598,7 +1599,7 @@ def _run_revision_task(task_id, instruction):
         if format_type == 'word':
             word_path = build_word_document_from_template(
                 config['cover_info'], revised_sections, config['task_dir'],
-                config.get('raw_data_path'), config.get('material_paths'), config.get('plot_paths'),
+                config.get('raw_data_paths'), config.get('material_paths'), config.get('plot_paths'),
                 append_raw_data_image=config.get('append_raw_data_image', False),
                 progress_cb=_update,
             )
@@ -1617,7 +1618,7 @@ def _run_revision_task(task_id, instruction):
         else:
             tex_path = build_latex_document(
                 config['cover_info'], revised_sections, config['task_dir'],
-                config.get('raw_data_path'), config.get('material_paths'), config.get('plot_paths'),
+                config.get('raw_data_paths'), config.get('material_paths'), config.get('plot_paths'),
                 config.get('append_raw_data_image', False)
             )
             out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.pdf'
@@ -2169,6 +2170,7 @@ def admin_material_detail(material_id):
     # 追加新图片（如果上传了）
     append_mode = request.form.get('append_mode') == 'true'
     material_files = request.files.getlist('materials')
+    uploaded_new_files = False
     
     if material_files and any(f.filename for f in material_files):
         # 获取现有资料的目录
@@ -2209,9 +2211,18 @@ def admin_material_detail(material_id):
             # 追加到现有路径
             material.material_paths = existing_paths + new_paths
             app.logger.info(f"[admin-update] Appended {len(new_paths)} images to material {material_id}")
+            uploaded_new_files = True
     
     # 先提交基本信息的修改（分类、名称等）
     db.session.commit()
+
+    # 若更新了资料图片，自动触发后台预解析，确保生成侧可复用缓存
+    if uploaded_new_files:
+        try:
+            parse_thread = threading.Thread(target=_parse_system_material, args=(material.id,), daemon=True)
+            parse_thread.start()
+        except Exception as e:
+            app.logger.error(f"[admin-update] Failed to start parse thread for material {material_id}: {e}")
     
     # 如果有文件上传失败，在这里返回警告（但基本信息已保存）
     if material_files and any(f.filename for f in material_files):
@@ -2695,6 +2706,18 @@ def migrate_stored_paths_to_relative():
                     if normalized != raw_path:
                         copied['path'] = normalized
                         parsed_changed = True
+                # 向后兼容：为历史预解析缓存补齐指纹字段，保证可被复用
+                # 指纹规则与 _can_reuse_preparsed_contents 一致：size:mtime_ns
+                fp = str(copied.get('path_fingerprint') or '').strip()
+                if not fp and isinstance(copied.get('path'), str) and copied.get('path'):
+                    try:
+                        resolved = _resolve_storage_path(copied.get('path'))
+                        if resolved and resolved.exists() and resolved.is_file():
+                            st = resolved.stat()
+                            copied['path_fingerprint'] = f'{st.st_size}:{int(st.st_mtime_ns)}'
+                            parsed_changed = True
+                    except Exception:
+                        pass
                 new_parsed.append(copied)
             if parsed_changed:
                 m.parsed_contents = new_parsed

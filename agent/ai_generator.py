@@ -836,7 +836,12 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             config['plot_infos'] = plot_infos
 
         # 仅在“没有上传结构化数据文件”时，才从原始数据记录单识别数据
-        raw_data_path = config.get('raw_data_path')
+        raw_data_paths = config.get('raw_data_paths', [])
+        # 兼容单张图片路径字符串
+        if isinstance(raw_data_paths, str):
+            raw_data_paths = [raw_data_paths]
+        # 取第一张用于 OCR
+        raw_data_path = raw_data_paths[0] if raw_data_paths else None
         use_raw_data_ocr = bool(config.get('use_raw_data_ocr'))
         if raw_data_path and data_paths:
             _update(task_id, '已上传 Excel/CSV 与原始数据记录单：按规则仅使用 Excel/CSV 计算，原始数据单仅用于文末附图', tasks_dict)

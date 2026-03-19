@@ -816,7 +816,7 @@ def build_word_document_from_template(
     cover_info,
     section_contents,
     task_dir,
-    raw_data_path=None,
+    raw_data_paths=None,
     material_paths=None,
     plot_paths=None,
     append_raw_data_image=False,
@@ -922,15 +922,28 @@ def build_word_document_from_template(
                 i += 1
         
         # 处理原始数据记录单（按开关决定是否在文档末尾添加）
-        if append_raw_data_image and raw_data_path and Path(raw_data_path).exists():
-            try:
-                doc.add_page_break()
-                add_section_heading(doc, '原始数据记录单')
-                doc.add_picture(str(raw_data_path), width=Inches(5.5))
-                last_para = doc.paragraphs[-1]
-                last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            except Exception as e:
-                print(f"[WARNING] 插入原始数据记录单图片失败: {e}")
+        if append_raw_data_image and raw_data_paths:
+            # 兼容单张图片路径字符串或列表
+            if isinstance(raw_data_paths, str):
+                raw_data_paths = [raw_data_paths]
+
+            valid_paths = [p for p in raw_data_paths if p and Path(p).exists()]
+            if valid_paths:
+                try:
+                    doc.add_page_break()
+                    add_section_heading(doc, '原始数据记录单')
+                    for idx, raw_data_path in enumerate(valid_paths):
+                        try:
+                            doc.add_picture(str(raw_data_path), width=Inches(5.5))
+                            last_para = doc.paragraphs[-1]
+                            last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            # 多张图片时添加间距
+                            if idx < len(valid_paths) - 1:
+                                doc.add_paragraph()
+                        except Exception as e:
+                            print(f"[WARNING] 插入原始数据记录单图片失败 {raw_data_path}: {e}")
+                except Exception as e:
+                    print(f"[WARNING] 处理原始数据记录单失败: {e}")
     else:
         # 创建新文档（原有逻辑）
         doc = Document()
@@ -1063,15 +1076,28 @@ def build_word_document_from_template(
                 i += 1
         
         # 在文档末尾添加原始数据记录单（按开关决定）
-        if append_raw_data_image and raw_data_path and Path(raw_data_path).exists():
-            try:
-                doc.add_page_break()
-                add_section_heading(doc, '原始数据记录单')
-                doc.add_picture(str(raw_data_path), width=Inches(5.5))
-                last_para = doc.paragraphs[-1]
-                last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            except Exception as e:
-                print(f"[WARNING] 插入原始数据记录单图片失败: {e}")
+        if append_raw_data_image and raw_data_paths:
+            # 兼容单张图片路径字符串或列表
+            if isinstance(raw_data_paths, str):
+                raw_data_paths = [raw_data_paths]
+
+            valid_paths = [p for p in raw_data_paths if p and Path(p).exists()]
+            if valid_paths:
+                try:
+                    doc.add_page_break()
+                    add_section_heading(doc, '原始数据记录单')
+                    for idx, raw_data_path in enumerate(valid_paths):
+                        try:
+                            doc.add_picture(str(raw_data_path), width=Inches(5.5))
+                            last_para = doc.paragraphs[-1]
+                            last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            # 多张图片时添加间距
+                            if idx < len(valid_paths) - 1:
+                                doc.add_paragraph()
+                        except Exception as e:
+                            print(f"[WARNING] 插入原始数据记录单图片失败 {raw_data_path}: {e}")
+                except Exception as e:
+                    print(f"[WARNING] 处理原始数据记录单失败: {e}")
     
     # 保存文档
     if progress_cb:
@@ -1106,7 +1132,7 @@ def run_word_generation(task_id, config, tasks_dict):
         _update(task_id, '正在构建 Word 文档...')
         word_path = build_word_document_from_template(
             config['cover_info'], section_contents, config['task_dir'],
-            config.get('raw_data_path'),
+            config.get('raw_data_paths'),
             config.get('material_paths'),
             config.get('plot_paths'),
             append_raw_data_image=config.get('append_raw_data_image', False),

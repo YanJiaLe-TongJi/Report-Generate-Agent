@@ -30,6 +30,7 @@ services:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
       - ./instance:/app/instance
+      - ./templates:/app/templates
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:5001/healthz"]
       interval: 30s

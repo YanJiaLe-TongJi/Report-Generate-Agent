@@ -60,6 +60,7 @@ _load_local_env_file()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024
+RAW_DATA_IMAGE_MAX_BYTES = 1 * 1024 * 1024
 secret_key = os.environ.get('SECRET_KEY')
 if not secret_key:
     raise RuntimeError('SECRET_KEY environment variable is required')
@@ -216,6 +217,8 @@ def _public_task_payload(task):
         'download_url': task.get('download_url'),
         'raw_url': task.get('raw_url'),
         'tex_url': task.get('tex_url'),
+        'result_mode': task.get('result_mode'),
+        'result_message': task.get('result_message'),
     }
 
 
@@ -355,6 +358,7 @@ class SystemMaterial(db.Model):
     # 文件路径存储
     material_paths = db.Column(db.JSON, default=list)  # 资料图片路径列表
     example_path = db.Column(db.String(500))  # 参考样例路径
+    thought_question_prompt = db.Column(db.Text)  # 管理员人工整理的思考题/问答题原文
     # 预解析缓存（避免每次生成重复调用 Vision）
     parsed_contents = db.Column(db.JSON, default=list)  # [{page, path, content}, ...]
     parsed_at = db.Column(db.DateTime)
@@ -379,11 +383,13 @@ class SystemMaterial(db.Model):
             'experiment_name': self.experiment_name,
             'category': self.get_category(),
             'description': self.description,
+            'thought_question_prompt': self.thought_question_prompt or '',
             'default_cover': self.default_cover,
             'uploaded_at': _to_utc_iso(self.uploaded_at),
             'is_active': self.is_active,
             'material_count': material_count,
             'has_example': bool(self.example_path),
+            'has_thought_question_prompt': bool((self.thought_question_prompt or '').strip()),
             'is_parsed': bool(material_count > 0 and parsed_count >= material_count and not self.parse_error),
             'parsed_at': _to_utc_iso(self.parsed_at),
             'parse_error': self.parse_error,
@@ -902,6 +908,23 @@ def welcome_md():
     return jsonify({'error': '文档不存在'}), 404
 
 
+@app.route('/tutorial-video')
+@login_required
+def tutorial_video():
+    """提供首页操作教学视频。"""
+    candidates = []
+    try:
+        for item in TEMPLATE_DIR.iterdir():
+            if item.is_file() and item.suffix.lower() == '.mp4':
+                candidates.append(item)
+    except Exception:
+        candidates = []
+    if candidates:
+        video_path = max(candidates, key=lambda p: p.stat().st_mtime)
+        return send_file(str(video_path), mimetype='video/mp4', conditional=True)
+    return jsonify({'error': '教学视频不存在'}), 404
+
+
 @app.route('/healthz')
 def healthz():
     """容器健康检查"""
@@ -1366,13 +1389,17 @@ def generate():
     system_material_id = request.form.get('system_material_id')
     material_paths = []
     system_example_path = None
+    thought_question_prompt = ''
     pre_parsed_contents = None
+    # 用户端默认重新使用系统资料预解析缓存；如需临时关闭，可显式传 0。
+    reuse_preparsed_contents = request.form.get('reuse_preparsed_contents', '1').strip() != '0'
     
     if system_material_id:
         material = SystemMaterial.query.get(system_material_id)
         if material and material.is_active:
             # 使用系统资料
             material_paths = []
+            thought_question_prompt = (material.thought_question_prompt or '').strip()
             for raw in (material.material_paths or []):
                 resolved = _resolve_storage_path(raw)
                 if resolved and resolved.exists():
@@ -1380,8 +1407,10 @@ def generate():
             resolved_example = _resolve_storage_path(material.example_path)
             if resolved_example and resolved_example.exists():
                 system_example_path = str(resolved_example)
-            # 若系统资料已有完整预解析缓存且路径严格匹配，则优先复用
-            if _can_reuse_preparsed_contents(material.material_paths or [], material.parsed_contents):
+            # 仅在显式开启时复用系统资料预解析缓存。
+            if reuse_preparsed_contents and _can_reuse_preparsed_contents(
+                material.material_paths or [], material.parsed_contents
+            ):
                 pre_parsed_contents = []
                 for i, item in enumerate(material.parsed_contents):
                     # 生成阶段只依赖 page/content，path 仅用于调试展示
@@ -1418,6 +1447,17 @@ def generate():
     raw_data_paths = []
     for idx, raw_data_file in enumerate(request.files.getlist('raw_data')):
         if raw_data_file and raw_data_file.filename:
+            try:
+                raw_data_file.stream.seek(0, os.SEEK_END)
+                raw_size = raw_data_file.stream.tell()
+                raw_data_file.stream.seek(0)
+            except Exception:
+                raw_size = 0
+            if raw_size > RAW_DATA_IMAGE_MAX_BYTES:
+                size_mb = raw_size / (1024 * 1024)
+                return jsonify({
+                    'error': f'原始数据记录单图片不能超过 1MB（{Path(raw_data_file.filename).name}: {size_mb:.1f}MB），请压缩图片大小后重试'
+                }), 400
             safe = f"raw_data_{idx}_{_safe_upload_name(raw_data_file.filename, 'raw_data')}"
             p = task_dir / safe
             raw_data_file.save(p)
@@ -1441,6 +1481,7 @@ def generate():
         'status': 'processing', 'steps': [],
         'current_step': '准备中...', 'error': None,
         'download_url': None, 'raw_url': None,
+        'result_mode': None, 'result_message': None,
         'user_id': current_user.id,
     }
 
@@ -1455,13 +1496,19 @@ def generate():
         'raw_data_paths': raw_data_paths,
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
+        'thought_question_prompt': thought_question_prompt,
         'pre_parsed_contents': pre_parsed_contents,
+        'reuse_preparsed_contents': reuse_preparsed_contents,
         'framework_mode': framework_mode,
     }
     tasks[task_id]['config'] = config
 
-    # 根据格式类型调用不同的生成函数
-    if format_type == 'word':
+    # 仅上传原始数据记录单时，先提取数据并导出 xlsx 给用户确认，不直接生成报告
+    extraction_only = bool(raw_data_paths and not data_paths)
+    if extraction_only:
+        from ai_generator import run_raw_data_extraction
+        thread = threading.Thread(target=run_raw_data_extraction, args=(task_id, config, tasks))
+    elif format_type == 'word':
         thread = threading.Thread(target=run_word_generation, args=(task_id, config, tasks))
     else:
         thread = threading.Thread(target=run_latex_generation, args=(task_id, config, tasks))
@@ -2034,6 +2081,7 @@ def admin_materials():
     # POST - 创建新资料
     experiment_name = request.form.get('experiment_name', '').strip()
     description = request.form.get('description', '').strip()
+    thought_question_prompt = request.form.get('thought_question_prompt', '').strip()
     category = request.form.get('category', '未分类').strip() or '未分类'
     is_active = request.form.get('is_active', 'true') == 'true'
     default_cover = request.form.get('default_cover', '{}')
@@ -2101,6 +2149,7 @@ def admin_materials():
     material = SystemMaterial(
         experiment_name=experiment_name,
         description=description,
+        thought_question_prompt=thought_question_prompt,
         is_active=is_active,
         default_cover=default_cover,
         material_paths=material_paths,
@@ -2141,6 +2190,10 @@ def admin_material_detail(material_id):
     # PUT - 更新资料
     material.experiment_name = request.form.get('experiment_name', material.experiment_name).strip()
     material.description = request.form.get('description', material.description).strip()
+    material.thought_question_prompt = request.form.get(
+        'thought_question_prompt',
+        material.thought_question_prompt or ''
+    ).strip()
     category = request.form.get('category', '').strip()
     material.is_active = request.form.get('is_active', 'true') == 'true'
 
@@ -2656,6 +2709,8 @@ def ensure_system_material_schema():
         alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_started_at DATETIME")
     if 'parse_finished_at' not in columns:
         alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_finished_at DATETIME")
+    if 'thought_question_prompt' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN thought_question_prompt TEXT")
 
     if not alter_sqls:
         return

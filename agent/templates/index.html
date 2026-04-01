@@ -92,6 +92,35 @@ textarea{
 .download-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .config-row{margin-bottom:12px}
 .hint{font-size:11px;color:var(--amber);margin-top:4px;margin-bottom:12px}
+.inline-link{
+  font-size:12px;
+  color:var(--primary);
+  text-decoration:none;
+}
+.inline-link:hover{text-decoration:underline}
+.video-placeholder{
+  border:1px dashed var(--border);
+  border-radius:var(--radius);
+  padding:18px;
+  background:#f8fafc;
+}
+.tutorial-video{
+  width:100%;
+  border-radius:10px;
+  background:#000;
+  box-shadow:var(--shadow);
+}
+.video-placeholder-title{
+  font-size:14px;
+  font-weight:600;
+  color:var(--text);
+  margin-bottom:6px;
+}
+.video-placeholder-text{
+  font-size:12px;
+  color:var(--text2);
+  line-height:1.7;
+}
 
 /* Modal Styles */
 .modal {
@@ -304,13 +333,32 @@ textarea{
   <h1>物理实验报告生成器</h1>
   <p class="subtitle">基于 Kimi API · LaTeX/Word 双格式 · 自动公式渲染 · 支持参考样例</p>
 
+  <div class="card">
+    <div class="card-title">操作教学视频</div>
+    <div class="video-placeholder">
+      <div class="video-placeholder-title">操作教学视频</div>
+      <video class="tutorial-video" controls preload="metadata">
+        <source src="/tutorial-video" type="video/mp4">
+        当前浏览器不支持视频播放，请直接下载查看。
+      </video>
+      <div class="video-placeholder-text">
+        如无法播放，请刷新页面后重试；也可以右键视频另存为本地查看。
+      </div>
+    </div>
+  </div>
+
   <!-- API Config -->
   <div class="card">
     <div class="card-title">API 配置</div>
     <div class="row">
       <div style="flex:2">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <label for="apiKey">Moonshot API Key</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label for="apiKey" style="margin-bottom:0;">Moonshot API Key</label>
+            <a class="inline-link" href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer">
+              申请 Key 链接
+            </a>
+          </div>
           <button class="btn btn-sm btn-success" onclick="saveApiKey()" style="padding:4px 10px;font-size:12px;">保存到账户</button>
         </div>
         <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" value="{{ user_api_key or '' }}">
@@ -470,16 +518,16 @@ textarea{
       </div>
       <div>
         <div class="upload-zone" id="dropRawData">
-          <input type="file" accept="image/*" id="inputRawData">
+          <input type="file" multiple accept="image/*" id="inputRawData">
           <div class="upload-icon">&#128221;</div>
           <div class="upload-label">原始数据记录单</div>
-          <div class="upload-hint">JPG / PNG，单张</div>
+          <div class="upload-hint">JPG / PNG，支持多张，单张不要超过 1MB</div>
         </div>
         <div class="file-list" id="listRawData"></div>
       </div>
     </div>
     <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：实验数据用于AI计算，原始数据记录单用于展示。至少上传其中一个。</div>
+    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：实验数据用于AI计算，原始数据记录单用于展示，单张图片请尽量压缩到 1MB 以内。至少上传其中一个。</div>
   </div>
 
   <!-- System Prompt -->
@@ -510,6 +558,7 @@ textarea{
   <!-- Result -->
   <div class="card result-area" id="resultArea">
     <div class="msg" id="resultMsg"></div>
+    <div id="resultHint" style="font-size:12px;color:var(--text2);margin-bottom:14px;"></div>
     <div class="download-btns" id="downloadBtns"></div>
     <div id="reviseArea" style="display:none;margin-top:16px;text-align:left;">
       <label for="revisionText">自然语言修订</label>
@@ -553,7 +602,7 @@ const WORD_PROMPT = `你是一个物理实验报告撰写助手。请根据提�
 11. 当资料要求或用户明确要求展示数据趋势时，可插入数据图并在正文中解释图像结论`;
 
 let currentFormat = 'word';
-const files = { materials: [], data: [], examples: [], rawData: null, systemExpId: null };
+const files = { materials: [], data: [], examples: [], rawData: [], systemExpId: null };
 let lastCompletedTaskId = null;
 let SYSTEM_EXPERIMENTS = [];
 let announcementHistory = [];
@@ -697,6 +746,7 @@ function setupDrop(zoneId, inputId, key, multi) {
 }
 
 const MAX_IMAGE_SIZE_MB = 20;
+const MAX_RAW_DATA_IMAGE_SIZE_MB = 1;
 
 function addFiles(key, fl, multi) {
   if (!multi) files[key] = [];
@@ -824,7 +874,7 @@ function initUploadZones() {
   setupDrop('dropData', 'inputData', 'data', true);
   setupDrop('dropExamples', 'inputExamples', 'examples', true);
 
-  // 原始数据记录单（单文件）
+  // 原始数据记录单（支持多张）
   const rawDataZone = document.getElementById('dropRawData');
   const rawDataInput = document.getElementById('inputRawData');
   if (rawDataZone && rawDataInput) {
@@ -832,30 +882,46 @@ function initUploadZones() {
     rawDataZone.addEventListener('dragleave', () => rawDataZone.classList.remove('drag-over'));
     rawDataZone.addEventListener('drop', e => {
       e.preventDefault(); rawDataZone.classList.remove('drag-over');
-      if (e.dataTransfer.files.length > 0) {
-        files.rawData = e.dataTransfer.files[0];
-        renderRawDataFile();
-      }
+      addRawDataFiles(e.dataTransfer.files);
     });
     rawDataInput.addEventListener('change', () => {
-      if (rawDataInput.files.length > 0) {
-        files.rawData = rawDataInput.files[0];
-        renderRawDataFile();
-      }
+      addRawDataFiles(rawDataInput.files);
       rawDataInput.value = '';
     });
   }
 }
 
-function renderRawDataFile() {
-  const el = document.getElementById('listRawData');
-  if (!files.rawData) { el.innerHTML = ''; return; }
-  el.innerHTML = `<div class="file-item"><span class="name">${files.rawData.name}</span><button class="remove" onclick="removeRawData()">&times;</button></div>`;
+function addRawDataFiles(fileList) {
+  const skippedFiles = [];
+  for (const f of fileList) {
+    // 检查图片文件大小
+    const isImage = f.type && f.type.startsWith('image/');
+    const fileSizeMB = f.size / (1024 * 1024);
+    if (isImage && fileSizeMB > MAX_RAW_DATA_IMAGE_SIZE_MB) {
+      skippedFiles.push(`${f.name} (${fileSizeMB.toFixed(1)}MB)`);
+      continue;
+    }
+    if (!files.rawData.some(x => x.name === f.name && x.size === f.size)) {
+      files.rawData.push(f);
+    }
+  }
+  if (skippedFiles.length > 0) {
+    alert(`以下原始数据记录单图片超过 ${MAX_RAW_DATA_IMAGE_SIZE_MB}MB 限制，已被跳过:\n${skippedFiles.join('\n')}\n\n请压缩图片大小后重新上传。`);
+  }
+  renderRawDataList();
 }
 
-function removeRawData() {
-  files.rawData = null;
-  renderRawDataFile();
+function renderRawDataList() {
+  const el = document.getElementById('listRawData');
+  if (!files.rawData.length) { el.innerHTML = ''; return; }
+  el.innerHTML = files.rawData.map((f, i) =>
+    `<div class="file-item"><span class="name">${f.name} <span style="color:var(--text3);font-size:11px;">(${formatFileSize(f.size)})</span></span><button class="remove" onclick="removeRawDataFile(${i})">&times;</button></div>`
+  ).join('');
+}
+
+function removeRawDataFile(index) {
+  files.rawData.splice(index, 1);
+  renderRawDataList();
 }
 
 function saveApiKey() {
@@ -893,9 +959,17 @@ function startGenerate() {
     alert('请上传实验资料或选择系统实验');
     return;
   }
-  if (!frameworkMode && !files.data.length && !files.rawData) {
+  if (!frameworkMode && !files.data.length && !files.rawData.length) {
     alert('请上传实验数据或原始数据记录单（至少一个）');
     return;
+  }
+  if (!frameworkMode && !files.data.length && files.rawData.length) {
+    const ok = confirm(
+      '当前仅上传了原始数据记录单。\n\n' +
+      '本次不会直接生成报告，而是先提取数据并生成 Excel 确认表供你下载核对。\n' +
+      '确认并修改无误后，请重新上传该 xlsx 与原始数据记录单，再完整生成报告。'
+    );
+    if (!ok) return;
   }
 
   const btn = document.getElementById('btnGenerate');
@@ -906,6 +980,8 @@ function startGenerate() {
   pa.classList.add('active'); ra.classList.remove('active');
   document.getElementById('stepLog').innerHTML = '';
   document.getElementById('progressBar').style.width = '0%';
+  const resultHint = document.getElementById('resultHint');
+  if (resultHint) resultHint.textContent = '';
 
   const fd = new FormData();
   fd.append('api_key', apiKey);
@@ -924,9 +1000,7 @@ function startGenerate() {
   files.materials.forEach(f => fd.append('materials', f));
   files.data.forEach(f => fd.append('data', f));
   files.examples.forEach(f => fd.append('examples', f));
-  if (files.rawData) {
-    fd.append('raw_data', files.rawData);
-  }
+  files.rawData.forEach(f => fd.append('raw_data', f));
 
   // 添加系统实验ID
   if (files.systemExpId) {
@@ -941,7 +1015,24 @@ function startGenerate() {
   selectedExampleIds.forEach(id => fd.append('selected_example_ids', id));
 
   fetch('/api/generate', { method: 'POST', body: fd })
-    .then(r => r.json())
+    .then(async r => {
+      const contentType = r.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await r.json();
+        if (!r.ok) {
+          throw new Error(data.error || '生成请求失败');
+        }
+        return data;
+      }
+      if (r.status === 413) {
+        throw new Error('上传文件过大，请压缩图片大小后重试');
+      }
+      const text = await r.text();
+      if (text.includes('<!doctype') || text.includes('<!DOCTYPE')) {
+        throw new Error('上传文件过大或服务器未返回 JSON，请压缩图片大小后重试');
+      }
+      throw new Error('服务器返回了无效响应，请压缩图片大小后重试');
+    })
     .then(d => {
       if (d.error) { showError(d.error); return; }
       lastCompletedTaskId = d.task_id;
@@ -981,7 +1072,7 @@ function pollProgress(tid) {
         if (d.status === 'done') {
           timer = null;
           bar.style.width = '100%';
-          showSuccess(d.download_url, d.raw_url, d.tex_url, tid);
+          showSuccess(d, tid);
         } else if (d.status === 'error') {
           timer = null;
           showError(d.error, d.download_url);
@@ -998,27 +1089,42 @@ function pollProgress(tid) {
   let timer = setTimeout(tick, 300);
 }
 
-function showSuccess(dl, raw, tex, taskId) {
+function showSuccess(task, taskId) {
   document.getElementById('btnGenerate').disabled = false;
   document.getElementById('btnGenerate').textContent = '生成报告';
   if (taskId) {
     lastCompletedTaskId = taskId;
   }
   const ra = document.getElementById('resultArea'); ra.classList.add('active');
-  document.getElementById('resultMsg').textContent = '报告生成完成！';
+  const resultMsg = document.getElementById('resultMsg');
+  const resultHint = document.getElementById('resultHint');
+  const resultMode = task && task.result_mode;
+  const dl = task ? task.download_url : '';
+  const raw = task ? task.raw_url : '';
+  const tex = task ? task.tex_url : '';
+  if (resultMode === 'raw_data_extract') {
+    resultMsg.textContent = '原始数据确认表已生成！';
+    resultHint.textContent = task.result_message || '请务必先下载并核对 Excel 确认表，临时文件后续会被系统自动清理。';
+  } else {
+    resultMsg.textContent = '报告生成完成！';
+    resultHint.textContent = task && task.result_message ? task.result_message : '';
+  }
   document.getElementById('resultMsg').className = 'msg';
   const format = document.getElementById('outputFormat').value;
   let b = '';
-  if (format === 'word') {
+  if (resultMode === 'raw_data_extract') {
+    b = `<a href="${dl}" class="btn btn-success" download>下载 Excel 确认表（务必下载）</a>`;
+    if (raw) b += `<a href="${raw}" class="btn btn-outline" download>下载提取原文</a>`;
+  } else if (format === 'word') {
     b = `<a href="${dl}" class="btn btn-success" download>下载 Word 报告</a>`;
   } else {
     b = `<a href="${dl}" class="btn btn-success" download>下载 PDF 报告</a>`;
     if (tex) b += `<a href="${tex}" class="btn btn-outline" download>下载 .tex 源码</a>`;
   }
-  if (raw) b += `<a href="${raw}" class="btn btn-outline" download>下载 Markdown</a>`;
+  if (resultMode !== 'raw_data_extract' && raw) b += `<a href="${raw}" class="btn btn-outline" download>下载 Markdown</a>`;
   document.getElementById('downloadBtns').innerHTML = b;
   const reviseArea = document.getElementById('reviseArea');
-  if (reviseArea) reviseArea.style.display = 'block';
+  if (reviseArea) reviseArea.style.display = resultMode === 'raw_data_extract' ? 'none' : 'block';
 }
 
 function showError(msg, fallbackUrl) {
@@ -1026,7 +1132,9 @@ function showError(msg, fallbackUrl) {
   document.getElementById('btnGenerate').textContent = '生成报告';
   const ra = document.getElementById('resultArea'); ra.classList.add('active');
   const m = document.getElementById('resultMsg');
+  const hint = document.getElementById('resultHint');
   m.textContent = '生成失败: ' + msg; m.className = 'msg error-msg';
+  if (hint) hint.textContent = '';
   const format = document.getElementById('outputFormat').value;
   let b = '<button class="btn btn-outline" onclick="startGenerate()">重试</button>';
   if (fallbackUrl) {

@@ -256,6 +256,11 @@ tr:hover{background:#f8fafc}
       <span>用户管理</span>
       <button class="btn-refresh" onclick="loadUsers()">🔄 刷新</button>
     </div>
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+      <input type="text" id="userSearchInput" placeholder="搜索账号..." 
+             style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius);width:200px;"
+             oninput="filterUsers()">
+    </div>
     <div id="userTable">
       <table>
         <thead>
@@ -269,10 +274,14 @@ tr:hover{background:#f8fafc}
             <th>操作</th>
           </tr>
         </thead>
-        <tbody id="userTableBody">
-          <tr><td colspan="7" class="empty-state">加载中...</td></tr>
-        </tbody>
       </table>
+      <div style="max-height:500px;overflow-y:auto;">
+        <table>
+          <tbody id="userTableBody">
+            <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -410,6 +419,7 @@ async function loadUsers() {
   try {
     const res = await fetch('/api/admin/users');
     users = await res.json();
+    currentPage = 1;
     renderUsers();
   } catch (e) {
     console.error('Failed to load users:', e);
@@ -906,17 +916,34 @@ async function submitReply() {
   }
 }
 
+let currentPage = 1;
+const usersPerPage = 10;
+let filteredUsers = [];
+
 // Render users table
 function renderUsers() {
+  const searchInput = document.getElementById('userSearchInput').value.toLowerCase().trim();
+  filteredUsers = searchInput 
+    ? users.filter(u => u.email.toLowerCase().includes(searchInput))
+    : [...users];
+  
+  const totalUsers = filteredUsers.length;
+  const totalPages = Math.ceil(totalUsers / usersPerPage);
+  if (currentPage > totalPages) currentPage = totalPages || 1;
+  
+  const start = (currentPage - 1) * usersPerPage;
+  const pageUsers = filteredUsers.slice(start, start + usersPerPage);
+  
   const tbody = document.getElementById('userTableBody');
-  if (users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无用户数据</td></tr>';
+  if (totalUsers === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">' + (searchInput ? '未找到匹配的用户' : '暂无用户数据') + '</td></tr>';
+    document.getElementById('userPagination')?.remove();
     return;
   }
   
   const isMainAdmin = currentAdminUser && currentAdminUser.email === 'admin';
   
-  tbody.innerHTML = users.map(u => {
+  tbody.innerHTML = pageUsers.map(u => {
     // 判断是否为主管理员
     const isMainUser = u.email === 'admin';
     const isAdminUser = u.is_admin;
@@ -957,6 +984,46 @@ function renderUsers() {
       <td>${actionButtons}</td>
     </tr>
   `}).join('');
+  
+  // 渲染分页
+  renderPagination(totalUsers, totalPages);
+}
+
+function renderPagination(totalUsers, totalPages) {
+  let pagination = document.getElementById('userPagination');
+  if (!pagination) {
+    pagination = document.createElement('div');
+    pagination.id = 'userPagination';
+    pagination.style.cssText = 'margin-top:12px;display:flex;justify-content:space-between;align-items:center;';
+    document.getElementById('userTable').appendChild(pagination);
+  }
+  
+  const start = (currentPage - 1) * usersPerPage + 1;
+  const end = Math.min(currentPage * usersPerPage, totalUsers);
+  
+  let pageButtons = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
+      pageButtons += `<button onclick="goToPage(${i})" style="padding:4px 10px;margin:0 2px;border:1px solid var(--border);background:${i === currentPage ? 'var(--primary)' : '#fff'};color:${i === currentPage ? '#fff' : 'var(--text)'};cursor:pointer;border-radius:4px;">${i}</button>`;
+    } else if (i === currentPage - 2 || i === currentPage + 2) {
+      pageButtons += `<span style="color:var(--text2)">...</span>`;
+    }
+  }
+  
+  pagination.innerHTML = `
+    <span style="color:var(--text2);font-size:13px;">共 ${totalUsers} 名用户，显示 ${start}-${end} 名</span>
+    <div>${pageButtons}</div>
+  `;
+}
+
+function goToPage(page) {
+  currentPage = page;
+  renderUsers();
+}
+
+function filterUsers() {
+  currentPage = 1;
+  renderUsers();
 }
 
 // 切换用户管理员权限
@@ -1275,7 +1342,10 @@ function renderMaterials() {
     <tr>
       <td><strong>${m.experiment_name}</strong></td>
       <td>${m.category || '未分类'}</td>
-      <td>${m.description || '-'}</td>
+      <td>
+        <div>${m.description || '-'}</div>
+        ${m.has_thought_question_prompt ? '<div style="margin-top:6px;"><span class="tag tag-success">已配置思考题文本</span></div>' : ''}
+      </td>
       <td>${m.material_count > 0 ? '<span class="tag tag-success">' + m.material_count + '个</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${m.has_example ? '<span class="tag tag-success">有</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${formatDate(m.uploaded_at)}</td>
@@ -1318,6 +1388,9 @@ function editMaterial(id) {
   if (!material) return;
   
   const existingCount = material.material_count || 0;
+  const safeExperimentName = escapeHtml(material.experiment_name || '');
+  const safeDescription = escapeHtml(material.description || '');
+  const safeThoughtQuestionPrompt = escapeHtml(material.thought_question_prompt || '');
   
   const modalHtml = `
     <div class="modal active" id="editMaterialModal" style="display:flex">
@@ -1330,7 +1403,7 @@ function editMaterial(id) {
           <div class="detail-row">
             <label>实验名称 *</label>
             <input type="text" name="experiment_name" required 
-              value="${material.experiment_name}" 
+              value="${safeExperimentName}" 
               style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
           </div>
           <div class="detail-row">
@@ -1344,7 +1417,12 @@ function editMaterial(id) {
           <div class="detail-row">
             <label>描述</label>
             <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" 
-              placeholder="实验简介...">${material.description || ''}</textarea>
+              placeholder="实验简介...">${safeDescription}</textarea>
+          </div>
+          <div class="detail-row">
+            <label>思考题文字描述</label>
+            <textarea name="thought_question_prompt" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-height:140px;font-family:Consolas,Monaco,'Courier New',monospace"
+              placeholder="把人工整理出的思考题/问答题原文粘贴到这里。生成“思考题”章节时会优先使用这段文字。">${safeThoughtQuestionPrompt}</textarea>
           </div>
           <div class="detail-row">
             <label style="display:flex;align-items:center;gap:8px;">
@@ -1444,6 +1522,7 @@ async function submitEditMaterial(e, id) {
     const fd = new FormData();
     fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
     fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('thought_question_prompt', form.querySelector('[name="thought_question_prompt"]').value);
     fd.append('category', form.querySelector('[name="category"]').value);
     fd.append('is_active', form.querySelector('[name="is_active"]').checked ? 'true' : 'false');
     fd.append('append_mode', 'true');
@@ -1505,6 +1584,10 @@ function showUploadMaterialModal() {
           <div class="detail-row">
             <label>描述</label>
             <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" placeholder="实验简介..."></textarea>
+          </div>
+          <div class="detail-row">
+            <label>思考题文字描述</label>
+            <textarea name="thought_question_prompt" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-height:140px;font-family:Consolas,Monaco,'Courier New',monospace" placeholder="把人工整理出的思考题/问答题原文粘贴到这里。生成“思考题”章节时会优先使用这段文字。"></textarea>
           </div>
           <div class="detail-row">
             <label>实验资料图片 * (支持多张, 单张不超过 20MB)</label>
@@ -1614,6 +1697,7 @@ async function submitMaterialUpload(e) {
     const fd = new FormData();
     fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
     fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('thought_question_prompt', form.querySelector('[name="thought_question_prompt"]').value);
     fd.append('category', form.querySelector('[name="category"]').value);
     fd.append('default_cover', form.querySelector('[name="default_cover"]').value);
     

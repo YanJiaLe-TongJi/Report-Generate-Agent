@@ -10,7 +10,7 @@ import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from docx import Document
 from pathlib import Path
 
@@ -248,6 +248,151 @@ def extract_raw_data_from_image(path, client, model):
         }],
     )
     return resp.choices[0].message.content or ''
+
+
+def _sanitize_sheet_title(title, fallback):
+    """生成合法的 Excel 工作表标题。"""
+    invalid_chars = set('[]:*?/\\')
+    cleaned = ''.join('_' if ch in invalid_chars else ch for ch in str(title or '').strip())
+    cleaned = cleaned[:31].strip() or fallback
+    return cleaned[:31]
+
+
+def _split_raw_table_blocks(text):
+    """按 === 分割多个表格块。"""
+    if not text:
+        return []
+    blocks = []
+    current = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if line and set(line) == {'='} and len(line) >= 3:
+            if current:
+                blocks.append('\n'.join(current).strip())
+                current = []
+            continue
+        current.append(raw_line)
+    if current:
+        blocks.append('\n'.join(current).strip())
+    return [b for b in blocks if b]
+
+
+def _table_block_to_rows(block):
+    """把模型输出的文本表格转为二维数组。"""
+    rows = []
+    for raw_line in str(block or '').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if '|' in line:
+            stripped = line.strip('|')
+            cells = [c.strip() for c in stripped.split('|')]
+            if any(cells):
+                rows.append(cells)
+        else:
+            rows.append([line])
+    width = max((len(r) for r in rows), default=0)
+    if width > 0:
+        rows = [r + [''] * (width - len(r)) for r in rows]
+    return rows
+
+
+def build_raw_data_confirmation_workbook(extracted_items, output_path):
+    """将原始数据记录单提取结果写成 xlsx，供用户确认。"""
+    wb = Workbook()
+    guide_ws = wb.active
+    guide_ws.title = '使用说明'
+    guide_rows = [
+        ['说明', '请先核对其余工作表中的提取结果，确认无误后再重新上传 xlsx 与原始数据记录单生成正式报告。'],
+        ['注意', '这是临时文件，请务必立即下载保存；系统会自动清理 uploads/outputs 中的临时文件。'],
+        ['建议', '若某些单元格识别有误，请直接在本 xlsx 内修正后保存。'],
+    ]
+    for row_idx, row in enumerate(guide_rows, start=1):
+        for col_idx, value in enumerate(row, start=1):
+            guide_ws.cell(row=row_idx, column=col_idx, value=value)
+
+    sheet_counter = 1
+    for item in extracted_items:
+        page = int(item.get('page') or sheet_counter)
+        content = item.get('content') or ''
+        blocks = _split_raw_table_blocks(content) or [content]
+        for block_idx, block in enumerate(blocks, start=1):
+            rows = _table_block_to_rows(block)
+            sheet_name = _sanitize_sheet_title(f'第{page}页_{block_idx}', f'表{sheet_counter}')
+            ws = wb.create_sheet(title=sheet_name)
+            if rows:
+                for row_idx, row in enumerate(rows, start=1):
+                    for col_idx, value in enumerate(row, start=1):
+                        ws.cell(row=row_idx, column=col_idx, value=value)
+            else:
+                ws['A1'] = '未识别到可结构化的表格，请人工补录。'
+            sheet_counter += 1
+
+    wb.save(output_path)
+
+
+def run_raw_data_extraction(task_id, config, tasks_dict):
+    """仅提取原始数据记录单并导出 xlsx，供用户确认。"""
+    try:
+        _update(task_id, '检测到仅上传原始数据记录单：本次先不生成报告', tasks_dict)
+        _update(task_id, '正在初始化数据提取模型...', tasks_dict)
+
+        api_key = config['api_key']
+        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        raw_data_paths = config.get('raw_data_paths') or []
+        if isinstance(raw_data_paths, str):
+            raw_data_paths = [raw_data_paths]
+        if not raw_data_paths:
+            raise ValueError('未找到原始数据记录单图片')
+
+        extracted_items = []
+        total = len(raw_data_paths)
+        for i, path in enumerate(raw_data_paths):
+            _update(task_id, f'正在提取原始数据记录单 ({i + 1}/{total})...', tasks_dict)
+            content = extract_raw_data_from_image(path, client, config['vision_model'])
+            extracted_items.append({
+                'page': i + 1,
+                'path': path,
+                'content': (content or '').strip(),
+            })
+            if i < total - 1:
+                time.sleep(0.5)
+
+        _update(task_id, '正在整理为 Excel 确认表...', tasks_dict)
+        task_dir = Path(config['task_dir'])
+        task_dir.mkdir(parents=True, exist_ok=True)
+        workbook_path = task_dir / '原始数据记录单提取结果.xlsx'
+        build_raw_data_confirmation_workbook(extracted_items, workbook_path)
+
+        output_name = f'原始数据确认表_{task_id[:8]}.xlsx'
+        output_path = OUTPUT_FOLDER / output_name
+        shutil.copy2(workbook_path, output_path)
+
+        preview_name = f'原始数据提取原文_{task_id[:8]}.md'
+        preview_path = OUTPUT_FOLDER / preview_name
+        preview_parts = []
+        for item in extracted_items:
+            preview_parts.append(f"## 第{item['page']}页\n\n{item['content'] or '(空)'}\n")
+        preview_path.write_text('\n'.join(preview_parts), encoding='utf-8')
+
+        if task_id in tasks_dict:
+            tasks_dict[task_id]['status'] = 'done'
+            tasks_dict[task_id]['download_url'] = f'/api/download/{output_name}'
+            tasks_dict[task_id]['raw_url'] = f'/api/download/{preview_name}'
+            tasks_dict[task_id]['result_mode'] = 'raw_data_extract'
+            tasks_dict[task_id]['result_message'] = (
+                '已提取原始数据记录单，请务必先下载 Excel 确认表并检查修改；'
+                '临时文件后续会被系统自动清理。确认无误后，再上传修正后的 xlsx 与原始数据记录单生成完整报告。'
+            )
+        _update(task_id, '原始数据确认表已生成，请先下载核对', tasks_dict)
+        return True
+    except Exception as e:
+        _update(task_id, f'原始数据提取失败: {str(e)}', tasks_dict)
+        if task_id in tasks_dict:
+            tasks_dict[task_id]['status'] = 'error'
+            tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
+        traceback.print_exc()
+        return False
 
 
 def _generate_section(client, model, system_prompt, section_name,
@@ -750,8 +895,14 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         # Phase 0: 资料识别
         image_contents = []
         pre_parsed_contents = config.get('pre_parsed_contents') or []
-        if isinstance(pre_parsed_contents, list) and pre_parsed_contents and config['material_paths']:
-            # 复用系统资料预解析结果，跳过 Vision 调用
+        reuse_preparsed_contents = bool(config.get('reuse_preparsed_contents'))
+        if (
+            reuse_preparsed_contents
+            and isinstance(pre_parsed_contents, list)
+            and pre_parsed_contents
+            and config['material_paths']
+        ):
+            # 显式开启时才复用系统资料预解析结果；默认重新识别原图以减少细节损失。
             image_contents = pre_parsed_contents
             _update(task_id, f'已加载系统资料预解析结果（{len(image_contents)} 页）', tasks_dict)
         elif config['material_paths']:
@@ -873,6 +1024,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         section_contents = {}
         text_model = config['text_model']
         sys_prompt = config['system_prompt']
+        thought_question_prompt = (config.get('thought_question_prompt') or '').strip()
 
         # Phase 1: 独立章节并行生成
         phase1_sections = ['实验名称', '实验目的', '实验原理', '实验内容', '实验仪器']
@@ -1001,14 +1153,29 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         phase3_tasks = []
         for sec_name in phase3_sections:
             if sec_name == '思考题':
-                extra = (
-                    f'请优先从实验资料中提取并完整回答“思考题/问答题/讨论题”。\n'
-                    f'若资料中出现多道题，需逐题作答并给出推理过程。\n'
-                    f'可参考以下数据处理摘要补充论据：\n'
-                    f'=== 数据处理摘要 ===\n{data_summary}\n'
-                    f'=== 摘要结束 ===\n'
-                    f'注意：本章节不需要插入任何图片。'
-                )
+                if thought_question_prompt:
+                    extra = (
+                        '以下是管理员人工整理的“思考题/问答题/讨论题”原文，请将其视为本章节的最高优先级输入，'
+                        '不要再依赖图片识别去重新提取题目，以免遗漏细节。\n'
+                        '要求：\n'
+                        '1. 按题目原有顺序逐题作答\n'
+                        '2. 题干中的条件、符号、限定语不要遗漏\n'
+                        '3. 若题目与实验数据相关，可结合下方数据处理摘要补充论据\n'
+                        '4. 不要编造未提供的新题目\n'
+                        f'=== 思考题原文开始 ===\n{thought_question_prompt}\n=== 思考题原文结束 ===\n'
+                        f'=== 数据处理摘要 ===\n{data_summary}\n'
+                        f'=== 摘要结束 ===\n'
+                        '注意：本章节不需要插入任何图片。'
+                    )
+                else:
+                    extra = (
+                        f'请优先从实验资料中提取并完整回答“思考题/问答题/讨论题”。\n'
+                        f'若资料中出现多道题，需逐题作答并给出推理过程。\n'
+                        f'可参考以下数据处理摘要补充论据：\n'
+                        f'=== 数据处理摘要 ===\n{data_summary}\n'
+                        f'=== 摘要结束 ===\n'
+                        f'注意：本章节不需要插入任何图片。'
+                    )
             else:
                 extra = (
                     f'请基于以下数据处理结果进行分析和总结：\n'

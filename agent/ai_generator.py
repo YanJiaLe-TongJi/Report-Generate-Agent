@@ -3,6 +3,7 @@
 AI 生成模块 - 处理与 Kimi API 的交互
 """
 
+import re
 import time
 import csv
 import shutil
@@ -258,10 +259,24 @@ def _sanitize_sheet_title(title, fallback):
     return cleaned[:31]
 
 
+_RE_MD_SEPARATOR = re.compile(r'^[|\s\-:]+$')
+
+
+def _strip_md_code_fence(text):
+    """去除模型输出中的 markdown 代码块包裹（```…```）。"""
+    lines = str(text or '').splitlines()
+    while lines and lines[0].strip().startswith('```'):
+        lines.pop(0)
+    while lines and lines[-1].strip().startswith('```'):
+        lines.pop()
+    return '\n'.join(lines)
+
+
 def _split_raw_table_blocks(text):
     """按 === 分割多个表格块。"""
     if not text:
         return []
+    text = _strip_md_code_fence(text)
     blocks = []
     current = []
     for raw_line in str(text).splitlines():
@@ -278,23 +293,49 @@ def _split_raw_table_blocks(text):
 
 
 def _table_block_to_rows(block):
-    """把模型输出的文本表格转为二维数组。"""
+    """把模型输出的文本表格转为二维数组。
+
+    过滤 markdown 代码块标记、分隔行（|---|---|）以及不含 | 的
+    非表格说明文字，只保留有效数据行。
+    """
     rows = []
     for raw_line in str(block or '').splitlines():
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith('```'):
+            continue
         if '|' in line:
+            if _RE_MD_SEPARATOR.match(line):
+                continue
             stripped = line.strip('|')
             cells = [c.strip() for c in stripped.split('|')]
             if any(cells):
                 rows.append(cells)
+        # 不含 | 的行只在尚未发现任何表格行时忽略（可能是模型前置说明）
+        elif not rows:
+            continue
         else:
             rows.append([line])
     width = max((len(r) for r in rows), default=0)
     if width > 0:
         rows = [r + [''] * (width - len(r)) for r in rows]
     return rows
+
+
+def _coerce_numeric(val):
+    """尝试把字符串转为 int / float，失败则原样返回。"""
+    if not isinstance(val, str):
+        return val
+    v = val.strip()
+    if not v:
+        return val
+    try:
+        if '.' in v or 'e' in v.lower():
+            return float(v)
+        return int(v)
+    except (ValueError, OverflowError):
+        return val
 
 
 def build_raw_data_confirmation_workbook(extracted_items, output_path):
@@ -311,6 +352,7 @@ def build_raw_data_confirmation_workbook(extracted_items, output_path):
         for col_idx, value in enumerate(row, start=1):
             guide_ws.cell(row=row_idx, column=col_idx, value=value)
 
+    first_data_ws = None
     sheet_counter = 1
     for item in extracted_items:
         page = int(item.get('page') or sheet_counter)
@@ -320,14 +362,18 @@ def build_raw_data_confirmation_workbook(extracted_items, output_path):
             rows = _table_block_to_rows(block)
             sheet_name = _sanitize_sheet_title(f'第{page}页_{block_idx}', f'表{sheet_counter}')
             ws = wb.create_sheet(title=sheet_name)
+            if first_data_ws is None:
+                first_data_ws = ws
             if rows:
                 for row_idx, row in enumerate(rows, start=1):
                     for col_idx, value in enumerate(row, start=1):
-                        ws.cell(row=row_idx, column=col_idx, value=value)
+                        ws.cell(row=row_idx, column=col_idx, value=_coerce_numeric(value))
             else:
                 ws['A1'] = '未识别到可结构化的表格，请人工补录。'
             sheet_counter += 1
 
+    if first_data_ws is not None:
+        wb.active = wb.sheetnames.index(first_data_ws.title)
     wb.save(output_path)
 
 

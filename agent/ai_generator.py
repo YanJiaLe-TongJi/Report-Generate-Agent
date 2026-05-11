@@ -620,7 +620,108 @@ def _generate_one_section(args):
         )
         return (sec_name, content, None)
     except Exception as e:
-        return (sec_name, '', str(e))
+        return (sec_name, '', e)
+
+
+def _format_generation_error(err):
+    """Return a readable model generation error without losing its type."""
+    if err is None:
+        return ''
+    if isinstance(err, str):
+        return err
+    msg = str(err)
+    return f'{type(err).__name__}: {msg}' if msg else type(err).__name__
+
+
+def _is_rate_limit_error(err):
+    """Detect Kimi/OpenAI-compatible 429 rate/concurrency limit errors."""
+    status_code = getattr(err, 'status_code', None)
+    response = getattr(err, 'response', None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, 'status_code', None)
+    if status_code == 429:
+        return True
+    err_text = _format_generation_error(err).lower()
+    return '429' in err_text or 'rate limit' in err_text or 'too many requests' in err_text
+
+
+def _rate_limit_wait_seconds(err, retry_count):
+    """Use Retry-After when present; otherwise apply a short exponential backoff."""
+    headers = None
+    response = getattr(err, 'response', None)
+    if response is not None:
+        headers = getattr(response, 'headers', None)
+    if headers is None:
+        headers = getattr(err, 'headers', None)
+    if headers:
+        for key in ('retry-after', 'Retry-After'):
+            try:
+                value = headers.get(key)
+            except Exception:
+                value = None
+            if value:
+                try:
+                    return max(1, min(90, int(float(value))))
+                except Exception:
+                    break
+    return min(60, 8 * (2 ** max(0, retry_count - 1)))
+
+
+def _run_section_tasks_with_adaptive_concurrency(phase_label, section_tasks, initial_workers, task_id, tasks_dict):
+    """Run section generation with automatic concurrency reduction on 429.
+
+    Kimi free accounts may reject concurrent requests with 429. Keep the fast path
+    parallel, but retry only rate-limited sections with lower concurrency.
+    """
+    pending = list(section_tasks)
+    if not pending:
+        return {}
+
+    workers = max(1, min(initial_workers, len(pending)))
+    retry_counts = {}
+    max_retries = 3
+    results = {}
+
+    while pending:
+        current_batch = pending
+        pending = []
+        retry_wait = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_generate_one_section, task): task for task in current_batch}
+            for future in as_completed(futures):
+                task = futures[future]
+                sec_name, content, err = future.result()
+                if err:
+                    if _is_rate_limit_error(err):
+                        retry_counts[sec_name] = retry_counts.get(sec_name, 0) + 1
+                        if retry_counts[sec_name] <= max_retries:
+                            pending.append(task)
+                            wait_seconds = _rate_limit_wait_seconds(err, retry_counts[sec_name])
+                            retry_wait = max(retry_wait, wait_seconds)
+                            _update(
+                                task_id,
+                                f'{phase_label}: 「{sec_name}」触发 429 限流，准备降低并发后重试 '
+                                f'({retry_counts[sec_name]}/{max_retries})',
+                                tasks_dict,
+                            )
+                        else:
+                            results[sec_name] = ('', err)
+                    else:
+                        results[sec_name] = ('', err)
+                else:
+                    results[sec_name] = (content, None)
+
+        if pending:
+            old_workers = workers
+            workers = max(1, workers // 2)
+            if workers < old_workers:
+                _update(task_id, f'{phase_label}: 检测到 429，生成并发从 {old_workers} 降至 {workers}', tasks_dict)
+            else:
+                _update(task_id, f'{phase_label}: 维持最低并发 1，等待后重试', tasks_dict)
+            time.sleep(max(1, retry_wait))
+
+    return results
 
 
 def _deduplicate_images(section_contents, format_type):
@@ -1094,16 +1195,18 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
                 section_img_indices, True
             ))
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(_generate_one_section, t): t[3] for t in phase1_tasks}
-            for future in as_completed(futures):
-                sec_name, content, err = future.result()
-                if err:
-                    _update(task_id, f'「{sec_name}」生成失败: {err}', tasks_dict)
-                    section_contents[sec_name] = f'生成失败: {err}'
-                else:
-                    _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
-                    section_contents[sec_name] = _sanitize_section_content(content)
+        phase1_results = _run_section_tasks_with_adaptive_concurrency(
+            'Phase 1', phase1_tasks, 3, task_id, tasks_dict
+        )
+        for sec_name in phase1_sections:
+            content, err = phase1_results.get(sec_name, ('', '未知错误'))
+            if err:
+                err_msg = _format_generation_error(err)
+                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                section_contents[sec_name] = f'生成失败: {err_msg}'
+            else:
+                _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
+                section_contents[sec_name] = _sanitize_section_content(content)
 
         # Phase 2: 数据处理
         _update(task_id, 'Phase 2: 生成数据记录处理...', tasks_dict)
@@ -1237,16 +1340,18 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
                 '', data_text, example_text, extra, format_type, [], plot_infos, [], False
             ))
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {executor.submit(_generate_one_section, t): t[3] for t in phase3_tasks}
-            for future in as_completed(futures):
-                sec_name, content, err = future.result()
-                if err:
-                    _update(task_id, f'「{sec_name}」生成失败: {err}', tasks_dict)
-                    section_contents[sec_name] = f'生成失败: {err}'
-                else:
-                    _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
-                    section_contents[sec_name] = _sanitize_section_content(content)
+        phase3_results = _run_section_tasks_with_adaptive_concurrency(
+            'Phase 3', phase3_tasks, 2, task_id, tasks_dict
+        )
+        for sec_name in phase3_sections:
+            content, err = phase3_results.get(sec_name, ('', '未知错误'))
+            if err:
+                err_msg = _format_generation_error(err)
+                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                section_contents[sec_name] = f'生成失败: {err_msg}'
+            else:
+                _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
+                section_contents[sec_name] = _sanitize_section_content(content)
 
         # 后处理：去除重复插入的图片标记
         _update(task_id, '正在处理图片重复问题...', tasks_dict)

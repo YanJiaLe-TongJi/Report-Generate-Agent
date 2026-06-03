@@ -234,12 +234,6 @@ FILE_CLEANUP_INTERVAL_SECONDS：清理任务扫描间隔
 
 
 
-不要将真实 .env 提交到版本库。
-
-
-
-生产环境必须使用强随机 SECRET_KEY 与 API_KEY_ENCRYPTION_KEY。
-
 
 
 管理端接口需依赖登录态与管理员权限。
@@ -267,14 +261,6 @@ FILE_CLEANUP_INTERVAL_SECONDS：清理任务扫描间隔
 
 
 查看健康状态：/healthz。
-
-10. 后续建议
-
-
-
-
-
-增加自动化测试（鉴权、下载权限、反馈状态流转、XSS 回归）。
 
 
 

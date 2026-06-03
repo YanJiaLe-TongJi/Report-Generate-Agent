@@ -1530,23 +1530,30 @@ def _extract_json_object(text):
     return text
 
 
-def _revise_sections_with_instruction(section_contents, instruction, config, progress_cb=None):
-    """根据用户修订意见，生成新的章节内容"""
+def _revise_sections_with_instruction(section_contents, instruction, config,
+                                      target_sections=None, progress_cb=None):
+    """根据用户修订意见，仅对选中章节生成新内容，其余保持原样。"""
+    if not target_sections:
+        target_sections = list(KNOWN_SECTIONS)
+
     if progress_cb:
-        progress_cb('正在初始化修订模型客户端...')
+        progress_cb(f'正在初始化修订模型客户端（修订 {len(target_sections)} 个章节）...')
     client = OpenAI(api_key=config['api_key'], base_url=config['base_url'])
-    section_json = json.dumps(section_contents, ensure_ascii=False)
+
+    subset = {k: section_contents.get(k, '') for k in target_sections}
+    section_json = json.dumps(subset, ensure_ascii=False)
+
     system_prompt = (
         "你是一个物理实验报告编辑助手。"
-        "你会根据用户的修订意见，对已有报告进行最小必要修改，保持其余内容风格和结构不变。"
+        "你会根据用户的修订意见，对指定章节进行修改，保持内容风格和结构不变。"
     )
     user_prompt = (
-        "下面是当前报告的章节内容（JSON）：\n"
+        "下面是需要修订的章节内容（JSON）：\n"
         f"{section_json}\n\n"
         "用户修订意见：\n"
         f"{instruction}\n\n"
-        "请返回一个 JSON 对象，键必须且只包含以下章节名：\n"
-        f"{KNOWN_SECTIONS}\n"
+        f"请返回一个 JSON 对象，键必须且只包含以下章节名：\n"
+        f"{target_sections}\n"
         "每个键对应修订后的章节正文（字符串）。"
         "不要返回任何解释性文字，不要使用 markdown 代码块。"
     )
@@ -1554,7 +1561,6 @@ def _revise_sections_with_instruction(section_contents, instruction, config, pro
     extra_body = None
     model_name = str(config.get('text_model') or '').lower()
     if model_name.startswith('kimi'):
-        # 通过 extra_body 透传厂商扩展参数，避免 SDK 关键字参数报错
         extra_body = {'thinking': {'type': 'disabled'}}
 
     if progress_cb:
@@ -1566,7 +1572,7 @@ def _revise_sections_with_instruction(section_contents, instruction, config, pro
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.6,
-        max_tokens=8192,
+        max_tokens=16384,
         extra_body=extra_body,
     )
     raw = resp.choices[0].message.content or ''
@@ -1576,12 +1582,11 @@ def _revise_sections_with_instruction(section_contents, instruction, config, pro
     try:
         obj = json.loads(json_text)
     except json.JSONDecodeError as e:
-        # 一次最小重试：让模型将其输出修复成严格 JSON，减少因引号/转义问题导致的失败
         if progress_cb:
             progress_cb('检测到返回格式异常，正在自动修复 JSON...')
         repair_prompt = (
             "你是 JSON 修复器。请将下面文本修复为严格合法的 JSON 对象。\n"
-            f"必须且只保留这些键：{KNOWN_SECTIONS}\n"
+            f"必须且只保留这些键：{target_sections}\n"
             "每个键的值都必须是字符串。\n"
             "不要输出解释，不要 markdown 代码块，只输出 JSON。\n\n"
             f"原始文本：\n{raw}"
@@ -1590,7 +1595,7 @@ def _revise_sections_with_instruction(section_contents, instruction, config, pro
             model=config['text_model'],
             messages=[{"role": "user", "content": repair_prompt}],
             temperature=0.0,
-            max_tokens=8192,
+            max_tokens=16384,
             extra_body=extra_body,
         )
         repaired_raw = repair_resp.choices[0].message.content or ''
@@ -1607,14 +1612,15 @@ def _revise_sections_with_instruction(section_contents, instruction, config, pro
                 f'附近内容: {snippet}'
             ) from e2
 
-    revised = {}
-    for section_name in KNOWN_SECTIONS:
-        value = obj.get(section_name, section_contents.get(section_name, ''))
-        revised[section_name] = value if isinstance(value, str) else str(value)
+    revised = dict(section_contents)
+    for section_name in target_sections:
+        value = obj.get(section_name)
+        if value is not None:
+            revised[section_name] = value if isinstance(value, str) else str(value)
     return revised
 
 
-def _run_revision_task(task_id, instruction):
+def _run_revision_task(task_id, instruction, target_sections=None):
     """后台执行修订任务，供 /api/revise 异步调用。"""
     task = tasks.get(task_id)
     if not task:
@@ -1628,13 +1634,13 @@ def _run_revision_task(task_id, instruction):
     try:
         config = task['config']
         _update('正在准备修订任务...')
-        # 原始任务目录可能已被清理线程删除，修订前确保可用
         config['task_dir'] = _ensure_task_work_dir(config.get('task_dir'), task_id)
 
         revised_sections = _revise_sections_with_instruction(
             task['section_contents'],
             instruction,
             config,
+            target_sections=target_sections,
             progress_cb=_update,
         )
         task['section_contents'] = revised_sections
@@ -1721,6 +1727,13 @@ def revise_report(task_id):
     if not instruction:
         return jsonify({'error': '请填写修订意见'}), 400
 
+    target_sections = data.get('target_sections') or []
+    if not isinstance(target_sections, list) or not target_sections:
+        return jsonify({'error': '请至少选择一个需要修订的章节'}), 400
+    invalid = [s for s in target_sections if s not in KNOWN_SECTIONS]
+    if invalid:
+        return jsonify({'error': f'无效的章节名：{invalid}'}), 400
+
     if task.get('status') == 'processing':
         return jsonify({'error': '任务正在处理中，请稍后'}), 400
 
@@ -1729,7 +1742,7 @@ def revise_report(task_id):
     task['current_step'] = '已提交修订任务，等待开始...'
     task['steps'].append(task['current_step'])
 
-    thread = threading.Thread(target=_run_revision_task, args=(task_id, instruction), daemon=True)
+    thread = threading.Thread(target=_run_revision_task, args=(task_id, instruction, target_sections), daemon=True)
     thread.start()
     return jsonify({'success': True, 'task_id': task_id})
 

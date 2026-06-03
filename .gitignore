@@ -224,3 +224,6 @@ agent/plots/
 # Misc logs/temp
 tmp/
 temp/
+
+# Local tutorial videos / media assets
+agent/templates/*.mp4

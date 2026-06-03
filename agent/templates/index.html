@@ -561,8 +561,10 @@ textarea{
     <div id="resultHint" style="font-size:12px;color:var(--text2);margin-bottom:14px;"></div>
     <div class="download-btns" id="downloadBtns"></div>
     <div id="reviseArea" style="display:none;margin-top:16px;text-align:left;">
-      <label for="revisionText">自然语言修订</label>
-      <textarea id="revisionText" style="min-height:90px;" placeholder="例如：讨论与分析里误差来源不够，请补充系统误差和随机误差，并将实验结论改为3条要点。"></textarea>
+      <label>选择需要修订的章节</label>
+      <div id="reviseSectionChecks" style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:10px;font-size:13px;"></div>
+      <label for="revisionText">修订意见</label>
+      <textarea id="revisionText" style="min-height:90px;" placeholder="例如：思考题请补充系统误差和随机误差的讨论。"></textarea>
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
         <button class="btn btn-outline" id="reviseBtn" onclick="submitRevision()" style="padding:8px 14px;">应用修订并重新编译</button>
       </div>
@@ -571,6 +573,20 @@ textarea{
 </div>
 
 <script>
+const REVISE_SECTIONS = ['实验名称','实验目的','实验原理','实验内容','实验仪器','数据记录处理','思考题','讨论与分析','实验结论'];
+(function initReviseCheckboxes() {
+  const container = document.getElementById('reviseSectionChecks');
+  if (!container) return;
+  REVISE_SECTIONS.forEach(name => {
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:inline-flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = name; cb.name = 'revise_section'; cb.style.margin = '0';
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(name));
+    container.appendChild(lbl);
+  });
+})();
 const LATEX_PROMPT = `你是一个物理实验报告撰写助手。请根据提供的实验资料、数据和参考样例，撰写完整的物理实验报告,保持风格和排版的学术性。
 
 核心要求：
@@ -1162,6 +1178,11 @@ function submitRevision() {
     revisionText.focus();
     return;
   }
+  const checked = [...document.querySelectorAll('input[name="revise_section"]:checked')].map(cb => cb.value);
+  if (!checked.length) {
+    alert('请至少勾选一个需要修订的章节');
+    return;
+  }
 
   reviseBtn.disabled = true;
   reviseBtn.textContent = '修订中...';
@@ -1176,7 +1197,7 @@ function submitRevision() {
   fetch(`/api/revise/${lastCompletedTaskId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instruction })
+    body: JSON.stringify({ instruction, target_sections: checked })
   })
     .then(async r => {
       const d = await r.json();

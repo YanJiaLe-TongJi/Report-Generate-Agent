@@ -21,11 +21,16 @@ services:
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_USER: "${SMTP_USER:-}"
       SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SPONSOR_WECHAT_ACCOUNT: "${SPONSOR_WECHAT_ACCOUNT:-}"
+      SPONSOR_ALIPAY_ACCOUNT: "${SPONSOR_ALIPAY_ACCOUNT:-}"
+      SPONSOR_WECHAT_QR_PATH: "${SPONSOR_WECHAT_QR_PATH:-}"
+      SPONSOR_ALIPAY_QR_PATH: "${SPONSOR_ALIPAY_QR_PATH:-}"
       SITE_LOGO_PATH: "${SITE_LOGO_PATH:-}"
     volumes:
       - ./uploads:/app/uploads
       - ./outputs:/app/outputs
       - ./instance:/app/instance
+      - ./templates:/app/templates
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:5001/healthz"]
       interval: 30s

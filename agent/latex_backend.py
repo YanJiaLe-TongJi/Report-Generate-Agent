@@ -50,11 +50,11 @@ def find_xelatex():
     return None
 
 
-def build_latex_document(cover_info, section_contents, task_dir, raw_data_path=None, material_paths=None, plot_paths=None, append_raw_data_image=False):
+def build_latex_document(cover_info, section_contents, task_dir, raw_data_paths=None, material_paths=None, plot_paths=None, append_raw_data_image=False):
     """构建 LaTeX 文档"""
     template_path = TEMPLATE_DIR / 'main.tex'
     tex_content = template_path.read_text(encoding='utf-8')
-    
+
     cover_map = {
         '%%COVER_EXPERIMENT_NAME%%': cover_info.get('experiment_name', ''),
         '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
@@ -62,19 +62,19 @@ def build_latex_document(cover_info, section_contents, task_dir, raw_data_path=N
         '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
         '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
     }
-    
+
     for placeholder, value in cover_map.items():
         escaped = escape_latex(value or '')
         tex_content = tex_content.replace(placeholder, escaped)
-    
+
     for sec_name in KNOWN_SECTIONS:
         placeholder = f'%%SECTION_{sec_name}%%'
         content = section_contents.get(sec_name, '') or ''
         tex_content = tex_content.replace(placeholder, content)
-    
+
     build_dir = Path(task_dir) / 'latex_build'
     build_dir.mkdir(exist_ok=True)
-    
+
     img_src = TEMPLATE_DIR / 'img.png'
     logo_src = TEMPLATE_DIR / 'logo.jpg'
     if img_src.exists():
@@ -82,7 +82,7 @@ def build_latex_document(cover_info, section_contents, task_dir, raw_data_path=N
     elif logo_src.exists():
         shutil.copy2(logo_src, build_dir / 'img.jpg')
         tex_content = tex_content.replace('img.png', 'img.jpg')
-    
+
     # 复制系统资料中的图片到 build 目录，并替换占位符
     # 为避免中文/空格/特殊字符文件名导致 LaTeX 找不到文件，统一重命名为安全文件名。
     if material_paths:
@@ -98,29 +98,48 @@ def build_latex_document(cover_info, section_contents, task_dir, raw_data_path=N
                         tex_content = tex_content.replace(f'%%MATERIAL_IMAGE_{idx}%%', dest_name)
                     except Exception as e:
                         print(f"[WARNING] 复制图片失败 {img_path}: {e}")
-    
+
     # 处理原始数据记录单图片（按开关决定是否附在文末）
-    if append_raw_data_image and raw_data_path and Path(raw_data_path).exists():
-        # 复制原始数据记录单到build目录
-        raw_data_ext = Path(raw_data_path).suffix.lower()
-        if raw_data_ext in ['.jpg', '.jpeg', '.png']:
-            dest_name = 'raw_data' + raw_data_ext
-            shutil.copy2(raw_data_path, build_dir / dest_name)
-            # 优先替换占位符；若正文没有占位符，则在文末自动追加
-            placeholder = '%%RAW_DATA_IMAGE%%'
-            if placeholder in tex_content:
-                tex_content = tex_content.replace(placeholder, dest_name)
-            else:
-                appendix = (
-                    '\n\\clearpage\n'
-                    '\\section*{原始数据记录单}\n'
-                    '\\noindent\\begin{center}\n'
-                    f'\\includegraphics[width=0.9\\textwidth,height=0.78\\textheight,keepaspectratio]{{{dest_name}}}\n'
-                    '\\\\[0.5em]\n'
-                    '{\\small 原始数据记录单}\n'
-                    '\\end{center}\n'
-                )
-                tex_content = tex_content.replace('\\end{document}', appendix + '\n\\end{document}')
+    if append_raw_data_image and raw_data_paths:
+        # 兼容单张图片路径字符串或列表
+        if isinstance(raw_data_paths, str):
+            raw_data_paths = [raw_data_paths]
+
+        valid_raw_data = []
+        for idx, raw_data_path in enumerate(raw_data_paths):
+            if raw_data_path and Path(raw_data_path).exists():
+                raw_data_ext = Path(raw_data_path).suffix.lower()
+                if raw_data_ext in ['.jpg', '.jpeg', '.png']:
+                    dest_name = f'raw_data_{idx}{raw_data_ext}'
+                    try:
+                        shutil.copy2(raw_data_path, build_dir / dest_name)
+                        valid_raw_data.append(dest_name)
+                    except Exception as e:
+                        print(f"[WARNING] 复制原始数据记录单失败 {raw_data_path}: {e}")
+
+        if valid_raw_data:
+            # 构建原始数据记录单附录
+            appendix_parts = ['\n\\clearpage\n\\section*{原始数据记录单}\n']
+
+            for dest_name in valid_raw_data:
+                # 优先替换占位符（兼容旧模板）
+                placeholder = '%%RAW_DATA_IMAGE%%'
+                if placeholder in tex_content:
+                    tex_content = tex_content.replace(placeholder, dest_name, 1)  # 只替换一次
+                else:
+                    # 在文末追加图片
+                    appendix_parts.append(
+                        '\\noindent\\begin{center}\n'
+                        f'\\includegraphics[width=0.9\\textwidth,height=0.78\\textheight,keepaspectratio]{{{dest_name}}}\n'
+                        '\\\\[0.5em]\n'
+                        f'{{\\small 原始数据记录单 {dest_name}}}\n'
+                        '\\end{center}\n\\vspace{1em}\n'
+                    )
+
+            # 如果没有使用占位符，则在文末追加所有图片
+            if '%%RAW_DATA_IMAGE%%' not in tex_content:
+                appendix = '\n'.join(appendix_parts)
+                tex_content = tex_content.replace('\\end{document}', appendix + '\\end{document}')
 
     # 复制 matplotlib 生成的数据图到 build 目录，并替换占位符
     if plot_paths:
@@ -204,7 +223,7 @@ def run_latex_generation(task_id, config, tasks_dict):
     _update(task_id, '正在构建 LaTeX 文档...')
     tex_path = build_latex_document(
         config['cover_info'], section_contents, config['task_dir'],
-        config.get('raw_data_path'),
+        config.get('raw_data_paths'),
         config.get('material_paths'),
         config.get('plot_paths'),
         config.get('append_raw_data_image', False)

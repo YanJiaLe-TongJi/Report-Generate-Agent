@@ -37,6 +37,8 @@ tr:hover{background:#f8fafc}
 .tag{display:inline-block;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:500}
 .tag-success{background:#dcfce7;color:#166534}
 .tag-neutral{background:#f1f5f9;color:#475569}
+.tag-warning{background:#fef3c7;color:#92400e}
+.tag-error{background:#fee2e2;color:#991b1b}
 .btn-small{font-size:12px;padding:4px 10px;border:none;border-radius:4px;cursor:pointer}
 .btn-danger{background:var(--error);color:#fff}
 .btn-danger:hover{opacity:.9}
@@ -183,13 +185,51 @@ tr:hover{background:#f8fafc}
       </tbody>
     </table>
   </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>系统维护设置</span>
+      <button class="btn-refresh" onclick="loadMaintenance()">🔄 刷新</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:12px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);margin:0;">
+        <input id="maintenanceEnabled" type="checkbox"> 启用系统维护（启用后非管理员登录仅显示维护页）
+      </label>
+      <div class="detail-row">
+        <label>维护页面标题</label>
+        <input id="maintenanceTitle" class="input-text" type="text" placeholder="例如：系统维护中">
+      </div>
+      <div class="detail-row">
+        <label>维护内容</label>
+        <textarea id="maintenanceContent" class="input-textarea" placeholder="例如：正在升级报告引擎，预计维护期间无法生成报告。"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="detail-row">
+          <label>维护开始时间（可选）</label>
+          <input id="maintenanceStartAt" class="input-text" type="datetime-local">
+        </div>
+        <div class="detail-row">
+          <label>维护结束时间（可选）</label>
+          <input id="maintenanceEndAt" class="input-text" type="datetime-local">
+        </div>
+      </div>
+      <div id="maintenanceStatusTip" style="font-size:12px;color:var(--text2);"></div>
+      <div style="display:flex;justify-content:flex-end;">
+        <button id="maintenanceSaveBtn" class="btn-small" style="background:var(--success);color:#fff;padding:8px 14px;" onclick="saveMaintenance()">保存维护设置</button>
+      </div>
+    </div>
+  </div>
   
   <!-- System Materials Management -->
   <div class="card">
     <div class="card-title">
       <span>系统资料管理</span>
-      <button class="btn-refresh" onclick="loadMaterials()" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 上传新实验资料</button>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button id="parseAllBtn" class="btn-refresh" onclick="parseAllMaterials()" style="background:#d97706;color:#fff;border-color:#d97706">⚡ 一键解析全部资料</button>
+        <button class="btn-refresh" onclick="loadMaterials()" style="background:var(--primary);color:#fff;border-color:var(--primary)">+ 上传新实验资料</button>
+      </div>
     </div>
+    <div id="materialParseHint" style="font-size:12px;color:var(--text2);margin-bottom:10px;"></div>
     <div id="materialTable">
       <table>
         <thead>
@@ -216,6 +256,11 @@ tr:hover{background:#f8fafc}
       <span>用户管理</span>
       <button class="btn-refresh" onclick="loadUsers()">🔄 刷新</button>
     </div>
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+      <input type="text" id="userSearchInput" placeholder="搜索账号..." 
+             style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius);width:200px;"
+             oninput="filterUsers()">
+    </div>
     <div id="userTable">
       <table>
         <thead>
@@ -229,10 +274,14 @@ tr:hover{background:#f8fafc}
             <th>操作</th>
           </tr>
         </thead>
-        <tbody id="userTableBody">
-          <tr><td colspan="7" class="empty-state">加载中...</td></tr>
-        </tbody>
       </table>
+      <div style="max-height:500px;overflow-y:auto;">
+        <table>
+          <tbody id="userTableBody">
+            <tr><td colspan="7" class="empty-state">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -338,6 +387,7 @@ let feedbacks = [];
 let currentReplyFeedbackId = null;
 let announcements = [];
 let editingAnnouncementId = null;
+let maintenanceConfig = null;
 
 // 获取当前登录的管理员信息
 async function loadCurrentAdmin() {
@@ -369,6 +419,7 @@ async function loadUsers() {
   try {
     const res = await fetch('/api/admin/users');
     users = await res.json();
+    currentPage = 1;
     renderUsers();
   } catch (e) {
     console.error('Failed to load users:', e);
@@ -398,6 +449,95 @@ async function loadAnnouncements() {
     console.error('Failed to load announcements:', e);
     document.getElementById('announcementTableBody').innerHTML =
       '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  }
+}
+
+async function loadMaintenance() {
+  try {
+    const res = await fetch('/api/admin/maintenance');
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '加载维护配置失败');
+      return;
+    }
+    maintenanceConfig = data;
+    const enabledEl = document.getElementById('maintenanceEnabled');
+    const titleEl = document.getElementById('maintenanceTitle');
+    const contentEl = document.getElementById('maintenanceContent');
+    const startEl = document.getElementById('maintenanceStartAt');
+    const endEl = document.getElementById('maintenanceEndAt');
+    if (enabledEl) enabledEl.checked = !!data.enabled;
+    if (titleEl) titleEl.value = data.title || '';
+    if (contentEl) contentEl.value = data.content || '';
+    if (startEl) startEl.value = toDatetimeLocalValue(data.start_at);
+    if (endEl) endEl.value = toDatetimeLocalValue(data.end_at);
+    updateMaintenanceStatusTip(data);
+  } catch (e) {
+    alert('加载维护配置失败: ' + e.message);
+  }
+}
+
+function updateMaintenanceStatusTip(data) {
+  const tipEl = document.getElementById('maintenanceStatusTip');
+  if (!tipEl) return;
+  if (!data || !data.enabled) {
+    tipEl.textContent = '当前维护模式：未启用。';
+    tipEl.style.color = 'var(--text2)';
+    return;
+  }
+  const period = `${data.start_at ? formatDate(data.start_at) : '立即'} ~ ${data.end_at ? formatDate(data.end_at) : '长期'}`;
+  if (data.active) {
+    tipEl.textContent = `当前维护模式：已生效（${period}）。非管理员用户登录后仅显示维护页。`;
+    tipEl.style.color = 'var(--amber)';
+  } else {
+    tipEl.textContent = `当前维护模式：已启用但未在生效时间内（${period}）。`;
+    tipEl.style.color = 'var(--text2)';
+  }
+}
+
+async function saveMaintenance() {
+  const saveBtn = document.getElementById('maintenanceSaveBtn');
+  const enabledEl = document.getElementById('maintenanceEnabled');
+  const titleEl = document.getElementById('maintenanceTitle');
+  const contentEl = document.getElementById('maintenanceContent');
+  const startEl = document.getElementById('maintenanceStartAt');
+  const endEl = document.getElementById('maintenanceEndAt');
+  if (!enabledEl || !titleEl || !contentEl || !startEl || !endEl) return;
+
+  const payload = {
+    enabled: !!enabledEl.checked,
+    title: (titleEl.value || '').trim(),
+    content: (contentEl.value || '').trim(),
+    start_at: startEl.value || null,
+    end_at: endEl.value || null,
+  };
+
+  const oldText = saveBtn ? saveBtn.textContent : '';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+  }
+  try {
+    const res = await fetch('/api/admin/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '保存维护配置失败');
+      return;
+    }
+    maintenanceConfig = data.maintenance || null;
+    updateMaintenanceStatusTip(maintenanceConfig || payload);
+    alert('维护配置已保存');
+  } catch (e) {
+    alert('保存维护配置失败: ' + e.message);
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = oldText || '保存维护设置';
+    }
   }
 }
 
@@ -776,17 +916,34 @@ async function submitReply() {
   }
 }
 
+let currentPage = 1;
+const usersPerPage = 10;
+let filteredUsers = [];
+
 // Render users table
 function renderUsers() {
+  const searchInput = document.getElementById('userSearchInput').value.toLowerCase().trim();
+  filteredUsers = searchInput 
+    ? users.filter(u => u.email.toLowerCase().includes(searchInput))
+    : [...users];
+  
+  const totalUsers = filteredUsers.length;
+  const totalPages = Math.ceil(totalUsers / usersPerPage);
+  if (currentPage > totalPages) currentPage = totalPages || 1;
+  
+  const start = (currentPage - 1) * usersPerPage;
+  const pageUsers = filteredUsers.slice(start, start + usersPerPage);
+  
   const tbody = document.getElementById('userTableBody');
-  if (users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无用户数据</td></tr>';
+  if (totalUsers === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">' + (searchInput ? '未找到匹配的用户' : '暂无用户数据') + '</td></tr>';
+    document.getElementById('userPagination')?.remove();
     return;
   }
   
   const isMainAdmin = currentAdminUser && currentAdminUser.email === 'admin';
   
-  tbody.innerHTML = users.map(u => {
+  tbody.innerHTML = pageUsers.map(u => {
     // 判断是否为主管理员
     const isMainUser = u.email === 'admin';
     const isAdminUser = u.is_admin;
@@ -827,6 +984,46 @@ function renderUsers() {
       <td>${actionButtons}</td>
     </tr>
   `}).join('');
+  
+  // 渲染分页
+  renderPagination(totalUsers, totalPages);
+}
+
+function renderPagination(totalUsers, totalPages) {
+  let pagination = document.getElementById('userPagination');
+  if (!pagination) {
+    pagination = document.createElement('div');
+    pagination.id = 'userPagination';
+    pagination.style.cssText = 'margin-top:12px;display:flex;justify-content:space-between;align-items:center;';
+    document.getElementById('userTable').appendChild(pagination);
+  }
+  
+  const start = (currentPage - 1) * usersPerPage + 1;
+  const end = Math.min(currentPage * usersPerPage, totalUsers);
+  
+  let pageButtons = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= currentPage - 1 && i <= currentPage + 1)) {
+      pageButtons += `<button onclick="goToPage(${i})" style="padding:4px 10px;margin:0 2px;border:1px solid var(--border);background:${i === currentPage ? 'var(--primary)' : '#fff'};color:${i === currentPage ? '#fff' : 'var(--text)'};cursor:pointer;border-radius:4px;">${i}</button>`;
+    } else if (i === currentPage - 2 || i === currentPage + 2) {
+      pageButtons += `<span style="color:var(--text2)">...</span>`;
+    }
+  }
+  
+  pagination.innerHTML = `
+    <span style="color:var(--text2);font-size:13px;">共 ${totalUsers} 名用户，显示 ${start}-${end} 名</span>
+    <div>${pageButtons}</div>
+  `;
+}
+
+function goToPage(page) {
+  currentPage = page;
+  renderUsers();
+}
+
+function filterUsers() {
+  currentPage = 1;
+  renderUsers();
 }
 
 // 切换用户管理员权限
@@ -979,6 +1176,146 @@ async function confirmDelete() {
 
 // ===================== System Materials Management =====================
 let materials = [];
+let materialsLoading = false;
+let materialParsePollingTimer = null;
+
+function parseStatusHtml(m) {
+  const status = m.parse_status || 'idle';
+  const done = Number(m.parse_done || 0);
+  const total = Number(m.parse_total || m.material_count || 0);
+  if ((m.material_count || 0) === 0) {
+    return '<span class="tag tag-neutral">无需解析</span>';
+  }
+  if (status === 'parsing') {
+    // 显示类似用户端的"正在识别资料图片 (1/3)..."
+    if (done > 0 && done <= total) {
+      return `<span class="tag tag-warning">正在解析第 ${done}/${total} 张图片...</span>`;
+    } else if (done === 0) {
+      return `<span class="tag tag-warning">准备解析...</span>`;
+    }
+    return `<span class="tag tag-warning">解析中 ${done}/${total || '?'}</span>`;
+  }
+  if (status === 'done' && m.is_parsed) {
+    return `<span class="tag tag-success">已解析 ${total || done}</span>`;
+  }
+  if (status === 'error' || m.parse_error) {
+    const errMsg = m.parse_error ? m.parse_error.substring(0, 50) : '解析失败';
+    return `<span class="tag tag-error" title="${m.parse_error || ''}">${errMsg}${m.parse_error && m.parse_error.length > 50 ? '...' : ''}</span>`;
+  }
+  return '<span class="tag tag-neutral">待解析</span>';
+}
+
+function refreshMaterialParseHint() {
+  const hintEl = document.getElementById('materialParseHint');
+  if (!hintEl) return;
+  const parsing = (materials || []).filter(m => (m.parse_status || '') === 'parsing');
+  if (!parsing.length) {
+    hintEl.textContent = '';
+    hintEl.style.color = 'var(--text2)';
+    return;
+  }
+  
+  // 构建详细的进度信息，类似用户端的"正在处理第X/Y张图片"
+  let progressDetails = [];
+  for (const m of parsing) {
+    const done = Number(m.parse_done || 0);
+    const total = Number(m.parse_total || m.material_count || 0);
+    const name = m.experiment_name || '未知资料';
+    if (done > 0 && done < total) {
+      progressDetails.push(`"${name}": 正在处理第 ${done}/${total} 张图片`);
+    } else if (done === 0) {
+      progressDetails.push(`"${name}": 准备中...`);
+    } else if (done === total) {
+      progressDetails.push(`"${name}": 即将完成`);
+    }
+  }
+  
+  const totalDone = parsing.reduce((acc, m) => acc + Number(m.parse_done || 0), 0);
+  const totalAll = parsing.reduce((acc, m) => acc + Number(m.parse_total || m.material_count || 0), 0);
+  
+  if (progressDetails.length > 0) {
+    hintEl.innerHTML = progressDetails.join('<br>') + `<br><br>总体进度: ${totalDone}/${totalAll || '?'} 张`;
+  } else {
+    hintEl.textContent = `实时解析进度：${parsing.length} 条任务进行中，累计 ${totalDone}/${totalAll || '?'} 页`;
+  }
+  hintEl.style.color = 'var(--amber)';
+}
+
+function ensureMaterialParsePolling() {
+  const hasParsing = (materials || []).some(m => (m.parse_status || '') === 'parsing');
+  if (hasParsing && !materialParsePollingTimer) {
+    materialParsePollingTimer = setInterval(() => loadMaterialsData(), 2000);
+  } else if (!hasParsing && materialParsePollingTimer) {
+    clearInterval(materialParsePollingTimer);
+    materialParsePollingTimer = null;
+  }
+}
+
+async function parseMaterial(id) {
+  const target = (materials || []).find(x => x.id === id);
+  if (!target) return;
+  if (!confirm(`确定解析「${target.experiment_name}」吗？`)) return;
+  try {
+    const res = await fetch(`/api/admin/materials/${id}/parse`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.error || '启动解析失败');
+      return;
+    }
+    // 提示用户开始解析
+    alert('预解析任务已启动，请关注下方进度显示');
+    loadMaterialsData();
+  } catch (e) {
+    alert('启动解析失败: ' + e.message);
+  }
+}
+
+async function parseAllMaterials() {
+  const parseBtn = document.getElementById('parseAllBtn');
+  const candidates = (materials || []).filter(m => (m.material_count || 0) > 0);
+  if (!candidates.length) {
+    alert('当前没有可解析的系统资料');
+    return;
+  }
+  if (!confirm(`将为 ${candidates.length} 条系统资料启动预解析任务，是否继续？\n\n注意：需要管理员账号已设置 API Key 才能使用预解析功能。`)) {
+    return;
+  }
+
+  const oldText = parseBtn ? parseBtn.textContent : '';
+  if (parseBtn) {
+    parseBtn.disabled = true;
+    parseBtn.textContent = '解析任务启动中...';
+  }
+
+  let okCount = 0;
+  const failed = [];
+  // 顺序调用，降低同时触发过多解析任务带来的峰值压力
+  for (const m of candidates) {
+    try {
+      const res = await fetch(`/api/admin/materials/${m.id}/parse`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data && data.success) {
+        okCount += 1;
+      } else {
+        failed.push(`${m.experiment_name || m.id}: ${(data && data.error) || '启动失败'}`);
+      }
+    } catch (e) {
+      failed.push(`${m.experiment_name || m.id}: ${e.message}`);
+    }
+  }
+
+  if (parseBtn) {
+    parseBtn.disabled = false;
+    parseBtn.textContent = oldText || '⚡ 一键解析全部资料';
+  }
+
+  if (!failed.length) {
+    alert(`已成功启动 ${okCount} 条资料的预解析任务。\n\n请关注下方进度显示。`);
+  } else {
+    alert(`已启动 ${okCount} 条，失败 ${failed.length} 条。\n\n` + failed.slice(0, 5).join('\n'));
+  }
+  loadMaterialsData();
+}
 
 async function loadMaterials() {
   try {
@@ -996,6 +1333,8 @@ function renderMaterials() {
   const tbody = document.getElementById('materialTableBody');
   if (materials.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无系统资料，点击"上传新实验资料"按钮添加</td></tr>';
+    refreshMaterialParseHint();
+    ensureMaterialParsePolling();
     return;
   }
   
@@ -1003,17 +1342,26 @@ function renderMaterials() {
     <tr>
       <td><strong>${m.experiment_name}</strong></td>
       <td>${m.category || '未分类'}</td>
-      <td>${m.description || '-'}</td>
+      <td>
+        <div>${m.description || '-'}</div>
+        ${m.has_thought_question_prompt ? '<div style="margin-top:6px;"><span class="tag tag-success">已配置思考题文本</span></div>' : ''}
+      </td>
       <td>${m.material_count > 0 ? '<span class="tag tag-success">' + m.material_count + '个</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${m.has_example ? '<span class="tag tag-success">有</span>' : '<span class="tag tag-neutral">无</span>'}</td>
       <td>${formatDate(m.uploaded_at)}</td>
-      <td>${m.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-neutral">禁用</span>'}</td>
+      <td>
+        ${m.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-neutral">禁用</span>'}
+        <div style="margin-top:6px;">${parseStatusHtml(m)}</div>
+      </td>
       <td>
         <button class="btn-small btn-info" onclick="editMaterial(${m.id})">编辑</button>
+        ${m.material_count > 0 ? `<button class="btn-small" style="background:#d97706;color:#fff" onclick="parseMaterial(${m.id})">解析</button>` : ''}
         <button class="btn-small btn-danger" onclick="deleteMaterial(${m.id})">删除</button>
       </td>
     </tr>
   `).join('');
+  refreshMaterialParseHint();
+  ensureMaterialParsePolling();
 }
 
 async function deleteMaterial(id) {
@@ -1039,40 +1387,169 @@ function editMaterial(id) {
   const material = materials.find(m => m.id === id);
   if (!material) return;
   
-  // Simple prompt-based edit for now
-  const newName = prompt('修改实验名称:', material.experiment_name);
-  if (newName === null) return;
-
-  const newCategory = prompt('修改分类（如：大物上/大物下）:', material.category || '未分类');
-  if (newCategory === null) return;
+  const existingCount = material.material_count || 0;
+  const safeExperimentName = escapeHtml(material.experiment_name || '');
+  const safeDescription = escapeHtml(material.description || '');
+  const safeThoughtQuestionPrompt = escapeHtml(material.thought_question_prompt || '');
   
-  const newDesc = prompt('修改描述:', material.description || '');
-  if (newDesc === null) return;
+  const modalHtml = `
+    <div class="modal active" id="editMaterialModal" style="display:flex">
+      <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto">
+        <div class="modal-header">
+          <h3>编辑实验资料</h3>
+          <p>修改 ${material.experiment_name} 的信息</p>
+        </div>
+        <form id="editMaterialForm" onsubmit="submitEditMaterial(event, ${id})">
+          <div class="detail-row">
+            <label>实验名称 *</label>
+            <input type="text" name="experiment_name" required 
+              value="${safeExperimentName}" 
+              style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+          </div>
+          <div class="detail-row">
+            <label>实验分类 *</label>
+            <select name="category" required style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px">
+              <option value="大物上" ${material.category === '大物上' ? 'selected' : ''}>大物上</option>
+              <option value="大物下" ${material.category === '大物下' ? 'selected' : ''}>大物下</option>
+              <option value="其他" ${material.category === '其他' ? 'selected' : ''}>其他</option>
+            </select>
+          </div>
+          <div class="detail-row">
+            <label>描述</label>
+            <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" 
+              placeholder="实验简介...">${safeDescription}</textarea>
+          </div>
+          <div class="detail-row">
+            <label>思考题文字描述</label>
+            <textarea name="thought_question_prompt" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-height:140px;font-family:Consolas,Monaco,'Courier New',monospace"
+              placeholder="把人工整理出的思考题/问答题原文粘贴到这里。生成“思考题”章节时会优先使用这段文字。">${safeThoughtQuestionPrompt}</textarea>
+          </div>
+          <div class="detail-row">
+            <label style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" name="is_active" ${material.is_active ? 'checked' : ''}> 
+              启用此资料
+            </label>
+          </div>
+          <div class="detail-row" style="background:#f0f9ff;padding:12px;border-radius:6px;">
+            <div style="font-weight:500;margin-bottom:8px;">📷 追加新图片</div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">
+              已有 ${existingCount} 张图片，可选择追加更多图片
+            </div>
+            <input type="file" name="new_materials" multiple accept="image/*" 
+              style="font-size:13px" 
+              onchange="updateEditFilePreview(this, ${existingCount})">
+            <div id="editFilesPreview" style="margin-top:8px;font-size:12px;color:var(--text2);"></div>
+          </div>
+          <div class="modal-footer" style="margin-top:20px">
+            <button type="button" class="btn-cancel" onclick="closeEditModal()">取消</button>
+            <button type="submit" class="btn-confirm" style="background:var(--primary)">保存修改</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
   
-  const isActive = confirm('是否启用此资料?\n确定=启用, 取消=禁用');
+  // Remove existing modal if any
+  const existing = document.getElementById('editMaterialModal');
+  if (existing) existing.remove();
   
-  updateMaterial(id, newName, newCategory, newDesc, isActive);
+  // Add new modal
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
 }
 
-async function updateMaterial(id, name, category, desc, isActive) {
+function closeEditModal() {
+  const modal = document.getElementById('editMaterialModal');
+  if (modal) modal.remove();
+}
+
+function updateEditFilePreview(input, existingCount) {
+  const preview = document.getElementById('editFilesPreview');
+  if (!input.files || input.files.length === 0) {
+    preview.innerHTML = '';
+    return;
+  }
+  
+  let html = '<div style="margin-top:6px;">将追加的文件：</div>';
+  const oversized = [];
+  let totalNewSize = 0;
+  
+  for (const f of input.files) {
+    const sizeMB = f.size / (1024 * 1024);
+    totalNewSize += f.size;
+    const isOversized = sizeMB > MAX_ADMIN_IMAGE_SIZE_MB;
+    const color = isOversized ? 'var(--error)' : 'var(--success)';
+    const warning = isOversized ? ' (超过 20MB!)' : '';
+    
+    html += `<div style="color:${color};margin:2px 0;">• ${f.name} (${formatAdminFileSize(f.size)})${warning}</div>`;
+    if (isOversized) oversized.push(f.name);
+  }
+  
+  html += `<div style="margin-top:6px;font-weight:500;">新增: ${input.files.length} 张 (${formatAdminFileSize(totalNewSize)})</div>`;
+  html += `<div style="margin-top:4px;">编辑后总共: ${existingCount + input.files.length} 张图片</div>`;
+  
+  if (oversized.length > 0) {
+    html += `<div style="color:var(--error);margin-top:8px;">⚠️ ${oversized.length} 个文件超过 20MB</div>`;
+  }
+  
+  preview.innerHTML = html;
+}
+
+async function submitEditMaterial(e, id) {
+  e.preventDefault();
+  
+  const form = document.getElementById('editMaterialForm');
+  const newFilesInput = form.querySelector('[name="new_materials"]');
+  const newFiles = newFilesInput ? newFilesInput.files : [];
+  
+  // 检查文件大小
+  const oversized = [];
+  for (const f of newFiles) {
+    if (f.size / (1024 * 1024) > MAX_ADMIN_IMAGE_SIZE_MB) {
+      oversized.push(f.name);
+    }
+  }
+  
+  if (oversized.length > 0) {
+    alert(`以下文件超过 20MB 限制:\n${oversized.join('\n')}`);
+    return;
+  }
+  
   try {
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    
     const fd = new FormData();
-    fd.append('experiment_name', name);
-    fd.append('category', category || '未分类');
-    fd.append('description', desc);
-    fd.append('is_active', isActive ? 'true' : 'false');
+    fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
+    fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('thought_question_prompt', form.querySelector('[name="thought_question_prompt"]').value);
+    fd.append('category', form.querySelector('[name="category"]').value);
+    fd.append('is_active', form.querySelector('[name="is_active"]').checked ? 'true' : 'false');
+    fd.append('append_mode', 'true');
+    
+    // 添加新图片
+    for (const f of newFiles) {
+      fd.append('materials', f);
+    }
     
     const res = await fetch(`/api/admin/materials/${id}`, { method: 'PUT', body: fd });
     const data = await res.json();
     
     if (res.ok) {
-      alert('资料已更新');
-      loadMaterials();
+      const msg = data.warning ? `已保存，但 ${data.warning}` : '修改已保存！';
+      alert(msg);
+      closeEditModal();
+      loadMaterialsData();
     } else {
-      alert(data.error || '更新失败');
+      alert(data.error || '保存失败');
+      btn.disabled = false;
+      btn.textContent = '保存修改';
     }
   } catch (e) {
-    alert('更新失败: ' + e.message);
+    alert('保存失败: ' + e.message);
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = false;
+    btn.textContent = '保存修改';
   }
 }
 
@@ -1109,8 +1586,13 @@ function showUploadMaterialModal() {
             <textarea name="description" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;min-height:60px" placeholder="实验简介..."></textarea>
           </div>
           <div class="detail-row">
-            <label>实验资料图片 * (支持多张)</label>
-            <input type="file" name="materials" multiple accept="image/*" required style="font-size:13px">
+            <label>思考题文字描述</label>
+            <textarea name="thought_question_prompt" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-height:140px;font-family:Consolas,Monaco,'Courier New',monospace" placeholder="把人工整理出的思考题/问答题原文粘贴到这里。生成“思考题”章节时会优先使用这段文字。"></textarea>
+          </div>
+          <div class="detail-row">
+            <label>实验资料图片 * (支持多张, 单张不超过 20MB)</label>
+            <input type="file" name="materials" multiple accept="image/*" required style="font-size:13px" onchange="updateMaterialFilePreview(this)">
+            <div id="materialFilesPreview" style="margin-top:8px;font-size:12px;color:var(--text2);"></div>
           </div>
           <div class="detail-row">
             <label>参考样例 (.docx) - 可选</label>
@@ -1142,26 +1624,111 @@ function closeUploadModal() {
   if (modal) modal.remove();
 }
 
+const MAX_ADMIN_IMAGE_SIZE_MB = 20;
+
+function formatAdminFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function updateMaterialFilePreview(input) {
+  const preview = document.getElementById('materialFilesPreview');
+  if (!input.files || input.files.length === 0) {
+    preview.innerHTML = '';
+    return;
+  }
+  
+  let html = '<div style="margin-top:6px;">已选文件：</div>';
+  const oversized = [];
+  
+  for (const f of input.files) {
+    const sizeMB = f.size / (1024 * 1024);
+    const isOversized = sizeMB > MAX_ADMIN_IMAGE_SIZE_MB;
+    const color = isOversized ? 'var(--error)' : 'var(--success)';
+    const warning = isOversized ? ' (超过 20MB!)' : '';
+    
+    html += `<div style="color:${color};margin:2px 0;">• ${f.name} (${formatAdminFileSize(f.size)})${warning}</div>`;
+    if (isOversized) oversized.push(f.name);
+  }
+  
+  if (oversized.length > 0) {
+    html += `<div style="color:var(--error);margin-top:8px;">⚠️ ${oversized.length} 个文件超过 20MB，建议压缩后再上传</div>`;
+  }
+  
+  preview.innerHTML = html;
+}
+
 async function submitMaterialUpload(e) {
   e.preventDefault();
   
   const form = document.getElementById('uploadMaterialForm');
-  const fd = new FormData(form);
+  const materialsInput = form.querySelector('[name="materials"]');
+  const materials = materialsInput.files;
   
   // Check if at least materials are provided
-  const materials = form.querySelector('[name="materials"]').files;
   if (materials.length === 0) {
     alert('请至少上传一个实验资料图片');
     return;
   }
   
+  // Check file sizes
+  const oversized = [];
+  for (const f of materials) {
+    if (f.size / (1024 * 1024) > MAX_ADMIN_IMAGE_SIZE_MB) {
+      oversized.push(`${f.name} (${(f.size / (1024 * 1024)).toFixed(1)}MB)`);
+    }
+  }
+  
+  if (oversized.length > 0) {
+    alert(`以下文件超过 20MB 限制，请压缩后重新上传:\n\n${oversized.join('\n')}\n\n您可以使用图片压缩工具减小文件大小。`);
+    return;
+  }
+  
   try {
     const btn = form.querySelector('button[type="submit"]');
-    btn.disabled = true;
-    btn.textContent = '上传中...';
+    const totalSize = Array.from(materials).reduce((sum, f) => sum + f.size, 0);
+    const totalSizeText = formatAdminFileSize(totalSize);
     
-    const res = await fetch('/api/admin/materials', { method: 'POST', body: fd });
-    const data = await res.json();
+    btn.disabled = true;
+    btn.textContent = `正在上传 ${materials.length} 个文件 (${totalSizeText})...`;
+    
+    // 构建 FormData 确保所有文件都被正确添加
+    const fd = new FormData();
+    fd.append('experiment_name', form.querySelector('[name="experiment_name"]').value);
+    fd.append('description', form.querySelector('[name="description"]').value);
+    fd.append('thought_question_prompt', form.querySelector('[name="thought_question_prompt"]').value);
+    fd.append('category', form.querySelector('[name="category"]').value);
+    fd.append('default_cover', form.querySelector('[name="default_cover"]').value);
+    
+    // 逐个添加文件
+    for (const f of materials) {
+      fd.append('materials', f);
+    }
+    
+    // 添加参考样例（如果有）
+    const exampleInput = form.querySelector('[name="example"]');
+    if (exampleInput && exampleInput.files && exampleInput.files.length > 0) {
+      fd.append('example', exampleInput.files[0]);
+    }
+    
+    console.log(`[upload] Sending ${materials.length} files, total size: ${totalSizeText}`);
+    
+    const res = await fetch('/api/admin/materials', { 
+      method: 'POST', 
+      body: fd
+    });
+    
+    console.log(`[upload] Response status: ${res.status}`);
+    
+    let data;
+    try {
+      data = await res.json();
+    } catch (parseErr) {
+      const text = await res.text();
+      console.error('[upload] Failed to parse response:', text);
+      throw new Error(`服务器返回无效响应: ${text.substring(0, 200)}`);
+    }
     
     if (res.ok) {
       alert('资料上传成功！');
@@ -1169,12 +1736,13 @@ async function submitMaterialUpload(e) {
       loadMaterialsData();
       loadStats();
     } else {
-      alert(data.error || '上传失败');
+      alert(data.error || `上传失败 (HTTP ${res.status})`);
       btn.disabled = false;
       btn.textContent = '上传';
     }
   } catch (e) {
-    alert('上传失败: ' + e.message);
+    console.error('[upload] Error:', e);
+    alert('上传失败: ' + (e.message || '网络错误'));
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = false;
     btn.textContent = '上传';
@@ -1183,6 +1751,8 @@ async function submitMaterialUpload(e) {
 
 // Separate function to actually load materials data
 async function loadMaterialsData() {
+  if (materialsLoading) return;
+  materialsLoading = true;
   try {
     const res = await fetch('/api/admin/materials');
     materials = await res.json();
@@ -1191,6 +1761,8 @@ async function loadMaterialsData() {
     console.error('Failed to load materials:', e);
     document.getElementById('materialTableBody').innerHTML = 
       '<tr><td colspan="8" class="empty-state">加载失败，请重试</td></tr>';
+  } finally {
+    materialsLoading = false;
   }
 }
 
@@ -1212,6 +1784,7 @@ loadCurrentAdmin().then(() => {
   loadStats();
   loadUsers();
   loadAnnouncements();
+  loadMaintenance();
   loadMaterialsData();
   loadFeedbacks();
 });

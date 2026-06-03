@@ -92,6 +92,35 @@ textarea{
 .download-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .config-row{margin-bottom:12px}
 .hint{font-size:11px;color:var(--amber);margin-top:4px;margin-bottom:12px}
+.inline-link{
+  font-size:12px;
+  color:var(--primary);
+  text-decoration:none;
+}
+.inline-link:hover{text-decoration:underline}
+.video-placeholder{
+  border:1px dashed var(--border);
+  border-radius:var(--radius);
+  padding:18px;
+  background:#f8fafc;
+}
+.tutorial-video{
+  width:100%;
+  border-radius:10px;
+  background:#000;
+  box-shadow:var(--shadow);
+}
+.video-placeholder-title{
+  font-size:14px;
+  font-weight:600;
+  color:var(--text);
+  margin-bottom:6px;
+}
+.video-placeholder-text{
+  font-size:12px;
+  color:var(--text2);
+  line-height:1.7;
+}
 
 /* Modal Styles */
 .modal {
@@ -304,13 +333,32 @@ textarea{
   <h1>物理实验报告生成器</h1>
   <p class="subtitle">基于 Kimi API · LaTeX/Word 双格式 · 自动公式渲染 · 支持参考样例</p>
 
+  <div class="card">
+    <div class="card-title">操作教学视频</div>
+    <div class="video-placeholder">
+      <div class="video-placeholder-title">操作教学视频</div>
+      <video class="tutorial-video" controls preload="metadata">
+        <source src="/tutorial-video" type="video/mp4">
+        当前浏览器不支持视频播放，请直接下载查看。
+      </video>
+      <div class="video-placeholder-text">
+        如无法播放，请刷新页面后重试；也可以右键视频另存为本地查看。
+      </div>
+    </div>
+  </div>
+
   <!-- API Config -->
   <div class="card">
     <div class="card-title">API 配置</div>
     <div class="row">
       <div style="flex:2">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <label for="apiKey">Moonshot API Key</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label for="apiKey" style="margin-bottom:0;">Moonshot API Key</label>
+            <a class="inline-link" href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer">
+              申请 Key 链接
+            </a>
+          </div>
           <button class="btn btn-sm btn-success" onclick="saveApiKey()" style="padding:4px 10px;font-size:12px;">保存到账户</button>
         </div>
         <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" value="{{ user_api_key or '' }}">
@@ -344,9 +392,18 @@ textarea{
       <div>
         <label for="outputFormat">输出格式</label>
         <select id="outputFormat">
-          <option value="latex" selected>PDF (LaTeX 编译)</option>
-          <option value="word">Word (.docx)</option>
+          <option value="latex">PDF (LaTeX 编译)</option>
+          <option value="word" selected>Word (.docx)</option>
         </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="frameworkMode" style="width:auto;">
+          框架模式（无数据生成）
+        </label>
+        <div class="hint" style="margin:4px 0 0 0;">跳过实验数据解析与绘图，数据处理章节使用公式+空表格占位</div>
       </div>
     </div>
   </div>
@@ -446,6 +503,7 @@ textarea{
           <div class="upload-icon">&#128196;</div>
           <div class="upload-label">实验资料</div>
           <div class="upload-hint">JPG / PNG，支持多张</div>
+        <div class="upload-hint" style="color:var(--amber);">单张图片建议不超过 20MB</div>
         </div>
         <div class="file-list" id="listMaterials"></div>
       </div>
@@ -460,16 +518,16 @@ textarea{
       </div>
       <div>
         <div class="upload-zone" id="dropRawData">
-          <input type="file" accept="image/*" id="inputRawData">
+          <input type="file" multiple accept="image/*" id="inputRawData">
           <div class="upload-icon">&#128221;</div>
           <div class="upload-label">原始数据记录单</div>
-          <div class="upload-hint">JPG / PNG，单张</div>
+          <div class="upload-hint">JPG / PNG，支持多张，单张不要超过 1MB</div>
         </div>
         <div class="file-list" id="listRawData"></div>
       </div>
     </div>
     <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：实验数据用于AI计算，原始数据记录单用于展示。至少上传其中一个。</div>
+    <div class="hint" style="margin-top:12px;margin-bottom:0;">提示：实验数据用于AI计算，原始数据记录单用于展示，单张图片请尽量压缩到 1MB 以内。至少上传其中一个。</div>
   </div>
 
   <!-- System Prompt -->
@@ -500,10 +558,13 @@ textarea{
   <!-- Result -->
   <div class="card result-area" id="resultArea">
     <div class="msg" id="resultMsg"></div>
+    <div id="resultHint" style="font-size:12px;color:var(--text2);margin-bottom:14px;"></div>
     <div class="download-btns" id="downloadBtns"></div>
     <div id="reviseArea" style="display:none;margin-top:16px;text-align:left;">
-      <label for="revisionText">自然语言修订</label>
-      <textarea id="revisionText" style="min-height:90px;" placeholder="例如：讨论与分析里误差来源不够，请补充系统误差和随机误差，并将实验结论改为3条要点。"></textarea>
+      <label>选择需要修订的章节</label>
+      <div id="reviseSectionChecks" style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:10px;font-size:13px;"></div>
+      <label for="revisionText">修订意见</label>
+      <textarea id="revisionText" style="min-height:90px;" placeholder="例如：思考题请补充系统误差和随机误差的讨论。"></textarea>
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
         <button class="btn btn-outline" id="reviseBtn" onclick="submitRevision()" style="padding:8px 14px;">应用修订并重新编译</button>
       </div>
@@ -512,6 +573,20 @@ textarea{
 </div>
 
 <script>
+const REVISE_SECTIONS = ['实验名称','实验目的','实验原理','实验内容','实验仪器','数据记录处理','思考题','讨论与分析','实验结论'];
+(function initReviseCheckboxes() {
+  const container = document.getElementById('reviseSectionChecks');
+  if (!container) return;
+  REVISE_SECTIONS.forEach(name => {
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:inline-flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = name; cb.name = 'revise_section'; cb.style.margin = '0';
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(name));
+    container.appendChild(lbl);
+  });
+})();
 const LATEX_PROMPT = `你是一个物理实验报告撰写助手。请根据提供的实验资料、数据和参考样例，撰写完整的物理实验报告,保持风格和排版的学术性。
 
 核心要求：
@@ -542,15 +617,18 @@ const WORD_PROMPT = `你是一个物理实验报告撰写助手。请根据提�
 10. 如果提供了参考样例，请严格参考其写作风格、详细程度和格式
 11. 当资料要求或用户明确要求展示数据趋势时，可插入数据图并在正文中解释图像结论`;
 
-let currentFormat = 'latex';
-const files = { materials: [], data: [], examples: [], rawData: null, systemExpId: null };
+let currentFormat = 'word';
+const files = { materials: [], data: [], examples: [], rawData: [], systemExpId: null };
 let lastCompletedTaskId = null;
 let SYSTEM_EXPERIMENTS = [];
 let announcementHistory = [];
 
 async function loadSystemExperiments() {
   try {
-    const res = await fetch('/api/system/materials');
+    const res = await fetch(`/api/system/materials?t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
     if (!res.ok) return;
     const data = await res.json();
     if (Array.isArray(data)) {
@@ -590,9 +668,35 @@ function onSystemExpChange() {
   const selectedOption = select.options[select.selectedIndex];
 
   if (select.value) {
+    // 查找选中的系统资料，获取 default_cover
+    const selectedExp = SYSTEM_EXPERIMENTS.find(exp => String(exp.id) === String(select.value));
+    const defaultCover = selectedExp ? (selectedExp.default_cover || {}) : {};
+    
+    // 自动填充封面信息（仅填充非空值）
+    if (defaultCover.experiment_name) {
+      document.getElementById('coverExpName').value = defaultCover.experiment_name;
+    }
+    if (defaultCover.student_name) {
+      document.getElementById('coverStudentName').value = defaultCover.student_name;
+    }
+    if (defaultCover.student_id) {
+      document.getElementById('coverStudentId').value = defaultCover.student_id;
+    }
+    if (defaultCover.group_number) {
+      document.getElementById('coverGroupNumber').value = defaultCover.group_number;
+    }
+    if (defaultCover.experiment_date) {
+      document.getElementById('coverExpDate').value = defaultCover.experiment_date;
+    }
+    
+    // 显示资料信息
+    const coverHint = defaultCover.experiment_name 
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--success);">已自动填充封面信息</div>` 
+      : '';
     infoDiv.innerHTML = `
       <div style="font-size:12px;font-weight:500;color:var(--text);margin-bottom:4px;">${category} / ${selectedOption.text}</div>
       <div style="font-size:12px;color:var(--text2);">使用系统实验资料，无需自行上传图片</div>
+      ${coverHint}
     `;
     files.systemExpId = select.value;
     // 禁用实验资料上传
@@ -625,7 +729,7 @@ function initSystemExperimentSelectors() {
 
 function initSystemPrompt() {
   const sp = document.getElementById('systemPrompt');
-  if (sp) sp.value = LATEX_PROMPT;
+  if (sp) sp.value = WORD_PROMPT;
 }
 
 function resetPrompt() {
@@ -657,11 +761,25 @@ function setupDrop(zoneId, inputId, key, multi) {
   input.addEventListener('change', () => { addFiles(key, input.files, multi); input.value = ''; });
 }
 
+const MAX_IMAGE_SIZE_MB = 20;
+const MAX_RAW_DATA_IMAGE_SIZE_MB = 1;
+
 function addFiles(key, fl, multi) {
   if (!multi) files[key] = [];
+  const skippedFiles = [];
   for (const f of fl) {
+    // 检查图片文件大小
+    const isImage = f.type && f.type.startsWith('image/');
+    const fileSizeMB = f.size / (1024 * 1024);
+    if (isImage && fileSizeMB > MAX_IMAGE_SIZE_MB) {
+      skippedFiles.push(`${f.name} (${fileSizeMB.toFixed(1)}MB)`);
+      continue;
+    }
     if (!multi) { files[key] = [f]; break; }
     if (!files[key].some(x => x.name === f.name && x.size === f.size)) files[key].push(f);
+  }
+  if (skippedFiles.length > 0) {
+    alert(`以下文件超过 ${MAX_IMAGE_SIZE_MB}MB 限制，已被跳过:\n${skippedFiles.join('\n')}\n\n请压缩图片后重新上传。`);
   }
   renderFileList(key);
 
@@ -751,12 +869,18 @@ function selectAllExamples() {
 
 function removeFile(key, i) { files[key].splice(i, 1); renderFileList(key); }
 
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 function renderFileList(key) {
   const id = 'list' + key.charAt(0).toUpperCase() + key.slice(1);
   const el = document.getElementById(id);
   if (!files[key].length) { el.innerHTML = ''; return; }
   el.innerHTML = files[key].map((f, i) =>
-    `<div class="file-item"><span class="name">${f.name}</span><button class="remove" onclick="removeFile('${key}',${i})">&times;</button></div>`
+    `<div class="file-item"><span class="name">${f.name} <span style="color:var(--text3);font-size:11px;">(${formatFileSize(f.size)})</span></span><button class="remove" onclick="removeFile('${key}',${i})">&times;</button></div>`
   ).join('');
 }
 
@@ -766,7 +890,7 @@ function initUploadZones() {
   setupDrop('dropData', 'inputData', 'data', true);
   setupDrop('dropExamples', 'inputExamples', 'examples', true);
 
-  // 原始数据记录单（单文件）
+  // 原始数据记录单（支持多张）
   const rawDataZone = document.getElementById('dropRawData');
   const rawDataInput = document.getElementById('inputRawData');
   if (rawDataZone && rawDataInput) {
@@ -774,30 +898,46 @@ function initUploadZones() {
     rawDataZone.addEventListener('dragleave', () => rawDataZone.classList.remove('drag-over'));
     rawDataZone.addEventListener('drop', e => {
       e.preventDefault(); rawDataZone.classList.remove('drag-over');
-      if (e.dataTransfer.files.length > 0) {
-        files.rawData = e.dataTransfer.files[0];
-        renderRawDataFile();
-      }
+      addRawDataFiles(e.dataTransfer.files);
     });
     rawDataInput.addEventListener('change', () => {
-      if (rawDataInput.files.length > 0) {
-        files.rawData = rawDataInput.files[0];
-        renderRawDataFile();
-      }
+      addRawDataFiles(rawDataInput.files);
       rawDataInput.value = '';
     });
   }
 }
 
-function renderRawDataFile() {
-  const el = document.getElementById('listRawData');
-  if (!files.rawData) { el.innerHTML = ''; return; }
-  el.innerHTML = `<div class="file-item"><span class="name">${files.rawData.name}</span><button class="remove" onclick="removeRawData()">&times;</button></div>`;
+function addRawDataFiles(fileList) {
+  const skippedFiles = [];
+  for (const f of fileList) {
+    // 检查图片文件大小
+    const isImage = f.type && f.type.startsWith('image/');
+    const fileSizeMB = f.size / (1024 * 1024);
+    if (isImage && fileSizeMB > MAX_RAW_DATA_IMAGE_SIZE_MB) {
+      skippedFiles.push(`${f.name} (${fileSizeMB.toFixed(1)}MB)`);
+      continue;
+    }
+    if (!files.rawData.some(x => x.name === f.name && x.size === f.size)) {
+      files.rawData.push(f);
+    }
+  }
+  if (skippedFiles.length > 0) {
+    alert(`以下原始数据记录单图片超过 ${MAX_RAW_DATA_IMAGE_SIZE_MB}MB 限制，已被跳过:\n${skippedFiles.join('\n')}\n\n请压缩图片大小后重新上传。`);
+  }
+  renderRawDataList();
 }
 
-function removeRawData() {
-  files.rawData = null;
-  renderRawDataFile();
+function renderRawDataList() {
+  const el = document.getElementById('listRawData');
+  if (!files.rawData.length) { el.innerHTML = ''; return; }
+  el.innerHTML = files.rawData.map((f, i) =>
+    `<div class="file-item"><span class="name">${f.name} <span style="color:var(--text3);font-size:11px;">(${formatFileSize(f.size)})</span></span><button class="remove" onclick="removeRawDataFile(${i})">&times;</button></div>`
+  ).join('');
+}
+
+function removeRawDataFile(index) {
+  files.rawData.splice(index, 1);
+  renderRawDataList();
 }
 
 function saveApiKey() {
@@ -808,7 +948,16 @@ function saveApiKey() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ api_key: apiKey })
   })
-  .then(r => r.json())
+  .then(async r => {
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      if (r.status === 401 || r.status === 302) {
+        throw new Error('登录已过期，请重新登录');
+      }
+      throw new Error(`服务器返回异常（HTTP ${r.status}）`);
+    }
+    return r.json();
+  })
   .then(d => {
     if (d.error) { alert('保存失败: ' + d.error); return; }
     alert('API Key 已保存到账户');
@@ -819,14 +968,24 @@ function saveApiKey() {
 function startGenerate() {
   const apiKey = document.getElementById('apiKey').value.trim();
   if (!apiKey) { alert('请输入 API Key'); return; }
-  // 验证：实验资料 或 系统实验至少一个；实验数据 或 原始数据记录单 至少一个
+  const frameworkModeEl = document.getElementById('frameworkMode');
+  const frameworkMode = !!(frameworkModeEl && frameworkModeEl.checked);
+  // 验证：实验资料 或 系统实验至少一个；实验数据 或 原始数据记录单 至少一个（框架模式可跳过数据验证）
   if (!files.materials.length && !files.systemExpId) {
     alert('请上传实验资料或选择系统实验');
     return;
   }
-  if (!files.data.length && !files.rawData) {
+  if (!frameworkMode && !files.data.length && !files.rawData.length) {
     alert('请上传实验数据或原始数据记录单（至少一个）');
     return;
+  }
+  if (!frameworkMode && !files.data.length && files.rawData.length) {
+    const ok = confirm(
+      '当前仅上传了原始数据记录单。\n\n' +
+      '本次不会直接生成报告，而是先提取数据并生成 Excel 确认表供你下载核对。\n' +
+      '确认并修改无误后，请重新上传该 xlsx 与原始数据记录单，再完整生成报告。'
+    );
+    if (!ok) return;
   }
 
   const btn = document.getElementById('btnGenerate');
@@ -837,6 +996,8 @@ function startGenerate() {
   pa.classList.add('active'); ra.classList.remove('active');
   document.getElementById('stepLog').innerHTML = '';
   document.getElementById('progressBar').style.width = '0%';
+  const resultHint = document.getElementById('resultHint');
+  if (resultHint) resultHint.textContent = '';
 
   const fd = new FormData();
   fd.append('api_key', apiKey);
@@ -855,13 +1016,14 @@ function startGenerate() {
   files.materials.forEach(f => fd.append('materials', f));
   files.data.forEach(f => fd.append('data', f));
   files.examples.forEach(f => fd.append('examples', f));
-  if (files.rawData) {
-    fd.append('raw_data', files.rawData);
-  }
+  files.rawData.forEach(f => fd.append('raw_data', f));
 
   // 添加系统实验ID
   if (files.systemExpId) {
     fd.append('system_material_id', files.systemExpId);
+  }
+  if (frameworkMode) {
+    fd.append('framework_mode', '1');
   }
 
   // 添加已保存的参考样例IDs（多选）
@@ -869,7 +1031,24 @@ function startGenerate() {
   selectedExampleIds.forEach(id => fd.append('selected_example_ids', id));
 
   fetch('/api/generate', { method: 'POST', body: fd })
-    .then(r => r.json())
+    .then(async r => {
+      const contentType = r.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await r.json();
+        if (!r.ok) {
+          throw new Error(data.error || '生成请求失败');
+        }
+        return data;
+      }
+      if (r.status === 413) {
+        throw new Error('上传文件过大，请压缩图片大小后重试');
+      }
+      const text = await r.text();
+      if (text.includes('<!doctype') || text.includes('<!DOCTYPE')) {
+        throw new Error('上传文件过大或服务器未返回 JSON，请压缩图片大小后重试');
+      }
+      throw new Error('服务器返回了无效响应，请压缩图片大小后重试');
+    })
     .then(d => {
       if (d.error) { showError(d.error); return; }
       lastCompletedTaskId = d.task_id;
@@ -879,14 +1058,12 @@ function startGenerate() {
 }
 
 function pollProgress(tid) {
-  const es = new EventSource(`/api/progress/${tid}`);
   const log = document.getElementById('stepLog');
   const bar = document.getElementById('progressBar');
   const step = document.getElementById('progressStep');
   let last = 0;
 
-  es.onmessage = e => {
-    const d = JSON.parse(e.data);
+  function updateUI(d) {
     step.textContent = d.current_step || '';
     if (d.steps && d.steps.length > last) {
       for (let i = last; i < d.steps.length; i++) {
@@ -896,39 +1073,74 @@ function pollProgress(tid) {
     }
     const total = (files.materials.length || 1) + 12;
     bar.style.width = Math.min((d.steps ? d.steps.length : 0) / total * 100, 100) + '%';
+  }
 
-    if (d.status === 'done') {
-      es.close(); bar.style.width = '100%';
-      showSuccess(d.download_url, d.raw_url, d.tex_url, tid);
-    } else if (d.status === 'error') {
-      es.close();
-      showError(d.error, d.download_url);
-    }
-  };
-  es.onerror = () => { es.close(); showError('连接中断'); };
+  function tick() {
+    if (timer === null) return;
+    fetch(`/api/progress/${tid}?json=1`, { credentials: 'same-origin' })
+      .then(r => {
+        if (!r.ok) throw new Error('获取进度失败');
+        return r.json();
+      })
+      .then(d => {
+        if (d.error) { timer = null; showError(d.error, d.download_url); return; }
+        updateUI(d);
+        if (d.status === 'done') {
+          timer = null;
+          bar.style.width = '100%';
+          showSuccess(d, tid);
+        } else if (d.status === 'error') {
+          timer = null;
+          showError(d.error, d.download_url);
+        } else {
+          timer = setTimeout(tick, 1500);
+        }
+      })
+      .catch(e => {
+        timer = null;
+        showError(e.message || '连接失败');
+      });
+  }
+
+  let timer = setTimeout(tick, 300);
 }
 
-function showSuccess(dl, raw, tex, taskId) {
+function showSuccess(task, taskId) {
   document.getElementById('btnGenerate').disabled = false;
   document.getElementById('btnGenerate').textContent = '生成报告';
   if (taskId) {
     lastCompletedTaskId = taskId;
   }
   const ra = document.getElementById('resultArea'); ra.classList.add('active');
-  document.getElementById('resultMsg').textContent = '报告生成完成！';
+  const resultMsg = document.getElementById('resultMsg');
+  const resultHint = document.getElementById('resultHint');
+  const resultMode = task && task.result_mode;
+  const dl = task ? task.download_url : '';
+  const raw = task ? task.raw_url : '';
+  const tex = task ? task.tex_url : '';
+  if (resultMode === 'raw_data_extract') {
+    resultMsg.textContent = '原始数据确认表已生成！';
+    resultHint.textContent = task.result_message || '请务必先下载并核对 Excel 确认表，临时文件后续会被系统自动清理。';
+  } else {
+    resultMsg.textContent = '报告生成完成！';
+    resultHint.textContent = task && task.result_message ? task.result_message : '';
+  }
   document.getElementById('resultMsg').className = 'msg';
   const format = document.getElementById('outputFormat').value;
   let b = '';
-  if (format === 'word') {
+  if (resultMode === 'raw_data_extract') {
+    b = `<a href="${dl}" class="btn btn-success" download>下载 Excel 确认表（务必下载）</a>`;
+    if (raw) b += `<a href="${raw}" class="btn btn-outline" download>下载提取原文</a>`;
+  } else if (format === 'word') {
     b = `<a href="${dl}" class="btn btn-success" download>下载 Word 报告</a>`;
   } else {
     b = `<a href="${dl}" class="btn btn-success" download>下载 PDF 报告</a>`;
     if (tex) b += `<a href="${tex}" class="btn btn-outline" download>下载 .tex 源码</a>`;
   }
-  if (raw) b += `<a href="${raw}" class="btn btn-outline" download>下载 Markdown</a>`;
+  if (resultMode !== 'raw_data_extract' && raw) b += `<a href="${raw}" class="btn btn-outline" download>下载 Markdown</a>`;
   document.getElementById('downloadBtns').innerHTML = b;
   const reviseArea = document.getElementById('reviseArea');
-  if (reviseArea) reviseArea.style.display = 'block';
+  if (reviseArea) reviseArea.style.display = resultMode === 'raw_data_extract' ? 'none' : 'block';
 }
 
 function showError(msg, fallbackUrl) {
@@ -936,7 +1148,9 @@ function showError(msg, fallbackUrl) {
   document.getElementById('btnGenerate').textContent = '生成报告';
   const ra = document.getElementById('resultArea'); ra.classList.add('active');
   const m = document.getElementById('resultMsg');
+  const hint = document.getElementById('resultHint');
   m.textContent = '生成失败: ' + msg; m.className = 'msg error-msg';
+  if (hint) hint.textContent = '';
   const format = document.getElementById('outputFormat').value;
   let b = '<button class="btn btn-outline" onclick="startGenerate()">重试</button>';
   if (fallbackUrl) {
@@ -964,13 +1178,26 @@ function submitRevision() {
     revisionText.focus();
     return;
   }
+  const checked = [...document.querySelectorAll('input[name="revise_section"]:checked')].map(cb => cb.value);
+  if (!checked.length) {
+    alert('请至少勾选一个需要修订的章节');
+    return;
+  }
 
   reviseBtn.disabled = true;
   reviseBtn.textContent = '修订中...';
+  const pa = document.getElementById('progressArea');
+  const ra = document.getElementById('resultArea');
+  pa.classList.add('active');
+  ra.classList.remove('active');
+  document.getElementById('stepLog').innerHTML = '';
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressStep').textContent = '正在提交修订任务...';
+
   fetch(`/api/revise/${lastCompletedTaskId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instruction })
+    body: JSON.stringify({ instruction, target_sections: checked })
   })
     .then(async r => {
       const d = await r.json();
@@ -978,11 +1205,12 @@ function submitRevision() {
       return d;
     })
     .then(d => {
-      alert('修订完成，已重新编译');
-      showSuccess(d.download_url, d.raw_url, d.tex_url, lastCompletedTaskId);
+      // 修订改为异步任务，提交成功后使用与生成一致的进度轮询
+      const tid = d.task_id || lastCompletedTaskId;
+      pollProgress(tid);
       revisionText.value = '';
     })
-    .catch(e => alert(e.message))
+    .catch(e => showError(e.message))
     .finally(() => {
       reviseBtn.disabled = false;
       reviseBtn.textContent = '应用修订并重新编译';

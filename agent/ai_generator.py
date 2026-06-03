@@ -3,6 +3,7 @@
 AI 生成模块 - 处理与 Kimi API 的交互
 """
 
+import re
 import time
 import csv
 import shutil
@@ -10,7 +11,7 @@ import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from docx import Document
 from pathlib import Path
 
@@ -250,6 +251,196 @@ def extract_raw_data_from_image(path, client, model):
     return resp.choices[0].message.content or ''
 
 
+def _sanitize_sheet_title(title, fallback):
+    """生成合法的 Excel 工作表标题。"""
+    invalid_chars = set('[]:*?/\\')
+    cleaned = ''.join('_' if ch in invalid_chars else ch for ch in str(title or '').strip())
+    cleaned = cleaned[:31].strip() or fallback
+    return cleaned[:31]
+
+
+_RE_MD_SEPARATOR = re.compile(r'^[|\s\-:]+$')
+
+
+def _strip_md_code_fence(text):
+    """去除模型输出中的 markdown 代码块包裹（```…```）。"""
+    lines = str(text or '').splitlines()
+    while lines and lines[0].strip().startswith('```'):
+        lines.pop(0)
+    while lines and lines[-1].strip().startswith('```'):
+        lines.pop()
+    return '\n'.join(lines)
+
+
+def _split_raw_table_blocks(text):
+    """按 === 分割多个表格块。"""
+    if not text:
+        return []
+    text = _strip_md_code_fence(text)
+    blocks = []
+    current = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if line and set(line) == {'='} and len(line) >= 3:
+            if current:
+                blocks.append('\n'.join(current).strip())
+                current = []
+            continue
+        current.append(raw_line)
+    if current:
+        blocks.append('\n'.join(current).strip())
+    return [b for b in blocks if b]
+
+
+def _table_block_to_rows(block):
+    """把模型输出的文本表格转为二维数组。
+
+    过滤 markdown 代码块标记、分隔行（|---|---|）以及不含 | 的
+    非表格说明文字，只保留有效数据行。
+    """
+    rows = []
+    for raw_line in str(block or '').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith('```'):
+            continue
+        if '|' in line:
+            if _RE_MD_SEPARATOR.match(line):
+                continue
+            stripped = line.strip('|')
+            cells = [c.strip() for c in stripped.split('|')]
+            if any(cells):
+                rows.append(cells)
+        # 不含 | 的行只在尚未发现任何表格行时忽略（可能是模型前置说明）
+        elif not rows:
+            continue
+        else:
+            rows.append([line])
+    width = max((len(r) for r in rows), default=0)
+    if width > 0:
+        rows = [r + [''] * (width - len(r)) for r in rows]
+    return rows
+
+
+def _coerce_numeric(val):
+    """尝试把字符串转为 int / float，失败则原样返回。"""
+    if not isinstance(val, str):
+        return val
+    v = val.strip()
+    if not v:
+        return val
+    try:
+        if '.' in v or 'e' in v.lower():
+            return float(v)
+        return int(v)
+    except (ValueError, OverflowError):
+        return val
+
+
+def build_raw_data_confirmation_workbook(extracted_items, output_path):
+    """将原始数据记录单提取结果写成 xlsx，供用户确认。"""
+    wb = Workbook()
+    guide_ws = wb.active
+    guide_ws.title = '使用说明'
+    guide_rows = [
+        ['说明', '请先核对其余工作表中的提取结果，确认无误后再重新上传 xlsx 与原始数据记录单生成正式报告。'],
+        ['注意', '这是临时文件，请务必立即下载保存；系统会自动清理 uploads/outputs 中的临时文件。'],
+        ['建议', '若某些单元格识别有误，请直接在本 xlsx 内修正后保存。'],
+    ]
+    for row_idx, row in enumerate(guide_rows, start=1):
+        for col_idx, value in enumerate(row, start=1):
+            guide_ws.cell(row=row_idx, column=col_idx, value=value)
+
+    first_data_ws = None
+    sheet_counter = 1
+    for item in extracted_items:
+        page = int(item.get('page') or sheet_counter)
+        content = item.get('content') or ''
+        blocks = _split_raw_table_blocks(content) or [content]
+        for block_idx, block in enumerate(blocks, start=1):
+            rows = _table_block_to_rows(block)
+            sheet_name = _sanitize_sheet_title(f'第{page}页_{block_idx}', f'表{sheet_counter}')
+            ws = wb.create_sheet(title=sheet_name)
+            if first_data_ws is None:
+                first_data_ws = ws
+            if rows:
+                for row_idx, row in enumerate(rows, start=1):
+                    for col_idx, value in enumerate(row, start=1):
+                        ws.cell(row=row_idx, column=col_idx, value=_coerce_numeric(value))
+            else:
+                ws['A1'] = '未识别到可结构化的表格，请人工补录。'
+            sheet_counter += 1
+
+    if first_data_ws is not None:
+        wb.active = wb.sheetnames.index(first_data_ws.title)
+    wb.save(output_path)
+
+
+def run_raw_data_extraction(task_id, config, tasks_dict):
+    """仅提取原始数据记录单并导出 xlsx，供用户确认。"""
+    try:
+        _update(task_id, '检测到仅上传原始数据记录单：本次先不生成报告', tasks_dict)
+        _update(task_id, '正在初始化数据提取模型...', tasks_dict)
+
+        api_key = config['api_key']
+        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        raw_data_paths = config.get('raw_data_paths') or []
+        if isinstance(raw_data_paths, str):
+            raw_data_paths = [raw_data_paths]
+        if not raw_data_paths:
+            raise ValueError('未找到原始数据记录单图片')
+
+        extracted_items = []
+        total = len(raw_data_paths)
+        for i, path in enumerate(raw_data_paths):
+            _update(task_id, f'正在提取原始数据记录单 ({i + 1}/{total})...', tasks_dict)
+            content = extract_raw_data_from_image(path, client, config['vision_model'])
+            extracted_items.append({
+                'page': i + 1,
+                'path': path,
+                'content': (content or '').strip(),
+            })
+            if i < total - 1:
+                time.sleep(0.5)
+
+        _update(task_id, '正在整理为 Excel 确认表...', tasks_dict)
+        task_dir = Path(config['task_dir'])
+        task_dir.mkdir(parents=True, exist_ok=True)
+        workbook_path = task_dir / '原始数据记录单提取结果.xlsx'
+        build_raw_data_confirmation_workbook(extracted_items, workbook_path)
+
+        output_name = f'原始数据确认表_{task_id[:8]}.xlsx'
+        output_path = OUTPUT_FOLDER / output_name
+        shutil.copy2(workbook_path, output_path)
+
+        preview_name = f'原始数据提取原文_{task_id[:8]}.md'
+        preview_path = OUTPUT_FOLDER / preview_name
+        preview_parts = []
+        for item in extracted_items:
+            preview_parts.append(f"## 第{item['page']}页\n\n{item['content'] or '(空)'}\n")
+        preview_path.write_text('\n'.join(preview_parts), encoding='utf-8')
+
+        if task_id in tasks_dict:
+            tasks_dict[task_id]['status'] = 'done'
+            tasks_dict[task_id]['download_url'] = f'/api/download/{output_name}'
+            tasks_dict[task_id]['raw_url'] = f'/api/download/{preview_name}'
+            tasks_dict[task_id]['result_mode'] = 'raw_data_extract'
+            tasks_dict[task_id]['result_message'] = (
+                '已提取原始数据记录单，请务必先下载 Excel 确认表并检查修改；'
+                '临时文件后续会被系统自动清理。确认无误后，再上传修正后的 xlsx 与原始数据记录单生成完整报告。'
+            )
+        _update(task_id, '原始数据确认表已生成，请先下载核对', tasks_dict)
+        return True
+    except Exception as e:
+        _update(task_id, f'原始数据提取失败: {str(e)}', tasks_dict)
+        if task_id in tasks_dict:
+            tasks_dict[task_id]['status'] = 'error'
+            tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
+        traceback.print_exc()
+        return False
+
+
 def _generate_section(client, model, system_prompt, section_name,
                       materials_text, data_text, example_text, extra_hint='',
                       format_type='latex', material_paths=None, plot_infos=None,
@@ -429,7 +620,108 @@ def _generate_one_section(args):
         )
         return (sec_name, content, None)
     except Exception as e:
-        return (sec_name, '', str(e))
+        return (sec_name, '', e)
+
+
+def _format_generation_error(err):
+    """Return a readable model generation error without losing its type."""
+    if err is None:
+        return ''
+    if isinstance(err, str):
+        return err
+    msg = str(err)
+    return f'{type(err).__name__}: {msg}' if msg else type(err).__name__
+
+
+def _is_rate_limit_error(err):
+    """Detect Kimi/OpenAI-compatible 429 rate/concurrency limit errors."""
+    status_code = getattr(err, 'status_code', None)
+    response = getattr(err, 'response', None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, 'status_code', None)
+    if status_code == 429:
+        return True
+    err_text = _format_generation_error(err).lower()
+    return '429' in err_text or 'rate limit' in err_text or 'too many requests' in err_text
+
+
+def _rate_limit_wait_seconds(err, retry_count):
+    """Use Retry-After when present; otherwise apply a short exponential backoff."""
+    headers = None
+    response = getattr(err, 'response', None)
+    if response is not None:
+        headers = getattr(response, 'headers', None)
+    if headers is None:
+        headers = getattr(err, 'headers', None)
+    if headers:
+        for key in ('retry-after', 'Retry-After'):
+            try:
+                value = headers.get(key)
+            except Exception:
+                value = None
+            if value:
+                try:
+                    return max(1, min(90, int(float(value))))
+                except Exception:
+                    break
+    return min(60, 8 * (2 ** max(0, retry_count - 1)))
+
+
+def _run_section_tasks_with_adaptive_concurrency(phase_label, section_tasks, initial_workers, task_id, tasks_dict):
+    """Run section generation with automatic concurrency reduction on 429.
+
+    Kimi free accounts may reject concurrent requests with 429. Keep the fast path
+    parallel, but retry only rate-limited sections with lower concurrency.
+    """
+    pending = list(section_tasks)
+    if not pending:
+        return {}
+
+    workers = max(1, min(initial_workers, len(pending)))
+    retry_counts = {}
+    max_retries = 3
+    results = {}
+
+    while pending:
+        current_batch = pending
+        pending = []
+        retry_wait = 0
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_generate_one_section, task): task for task in current_batch}
+            for future in as_completed(futures):
+                task = futures[future]
+                sec_name, content, err = future.result()
+                if err:
+                    if _is_rate_limit_error(err):
+                        retry_counts[sec_name] = retry_counts.get(sec_name, 0) + 1
+                        if retry_counts[sec_name] <= max_retries:
+                            pending.append(task)
+                            wait_seconds = _rate_limit_wait_seconds(err, retry_counts[sec_name])
+                            retry_wait = max(retry_wait, wait_seconds)
+                            _update(
+                                task_id,
+                                f'{phase_label}: 「{sec_name}」触发 429 限流，准备降低并发后重试 '
+                                f'({retry_counts[sec_name]}/{max_retries})',
+                                tasks_dict,
+                            )
+                        else:
+                            results[sec_name] = ('', err)
+                    else:
+                        results[sec_name] = ('', err)
+                else:
+                    results[sec_name] = (content, None)
+
+        if pending:
+            old_workers = workers
+            workers = max(1, workers // 2)
+            if workers < old_workers:
+                _update(task_id, f'{phase_label}: 检测到 429，生成并发从 {old_workers} 降至 {workers}', tasks_dict)
+            else:
+                _update(task_id, f'{phase_label}: 维持最低并发 1，等待后重试', tasks_dict)
+            time.sleep(max(1, retry_wait))
+
+    return results
 
 
 def _deduplicate_images(section_contents, format_type):
@@ -558,8 +850,8 @@ def _parse_image_section_mapping(image_contents):
         if ('整页文档截图' in page_shape) or ('教材' in content and '整页' in content):
             section_mapping['其他'].append(idx)
             continue
-        # 尝试从内容中提取【所属章节】
-        match = re.search(r'【所属章节】[:：]\s*(\S+)', content)
+        # 尝试从内容中提取“所属章节”，兼容不同输出格式
+        match = re.search(r'(?:【所属章节】|所属章节)\s*[:：]\s*([^\n\r]+)', content)
         if match:
             section = match.group(1).strip()
             # 映射到标准章节名
@@ -646,6 +938,74 @@ def _sanitize_section_content(content):
         tail = '\n'.join(f'\\end{{{env}}}' for env in reversed(stack))
         return text.rstrip() + '\n' + tail + '\n'
 
+    def _fix_tabular_alignment(text):
+        """
+        兜底修复常见 tabular 报错：
+        - Extra alignment tab has been changed to \\cr（列数不匹配）
+        仅在 tabular 环境内处理，不改动其他数学环境。
+        """
+        def _count_columns(spec):
+            s = (spec or '').replace('|', '')
+            cnt = 0
+            i = 0
+            while i < len(s):
+                ch = s[i]
+                if ch in ('c', 'l', 'r', 'X'):
+                    cnt += 1
+                    i += 1
+                    continue
+                if ch in ('p', 'm', 'b') and i + 1 < len(s) and s[i + 1] == '{':
+                    cnt += 1
+                    i += 2
+                    depth = 1
+                    while i < len(s) and depth > 0:
+                        if s[i] == '{':
+                            depth += 1
+                        elif s[i] == '}':
+                            depth -= 1
+                        i += 1
+                    continue
+                i += 1
+            return cnt
+
+        begin_pat = re.compile(r'\\begin\{tabular\}\{([^}]*)\}')
+        lines = text.splitlines()
+        out = []
+        in_tabular = False
+        expected_cols = 0
+
+        for ln in lines:
+            m = begin_pat.search(ln)
+            if m:
+                in_tabular = True
+                expected_cols = _count_columns(m.group(1))
+                out.append(ln)
+                continue
+            if in_tabular and r'\end{tabular}' in ln:
+                in_tabular = False
+                expected_cols = 0
+                out.append(ln)
+                continue
+
+            if in_tabular and expected_cols > 0:
+                stripped = ln.strip()
+                if (not stripped) or stripped.startswith('%') or (
+                    stripped.startswith('\\toprule') or stripped.startswith('\\midrule')
+                    or stripped.startswith('\\bottomrule') or stripped.startswith('\\hline')
+                ):
+                    out.append(ln)
+                    continue
+                if '&' in ln and r'\\' in ln:
+                    body, sep, tail = ln.partition(r'\\')
+                    cells = [c.strip() for c in body.split('&')]
+                    if len(cells) > expected_cols:
+                        cells = cells[:expected_cols]
+                    elif len(cells) < expected_cols:
+                        cells.extend([''] * (expected_cols - len(cells)))
+                    ln = ' & '.join(cells) + f' {sep}{tail}'
+            out.append(ln)
+        return '\n'.join(out)
+
     lines = []
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -663,6 +1023,7 @@ def _sanitize_section_content(content):
     if _count_unescaped_dollar(cleaned) % 2 == 1:
         cleaned = _drop_last_unescaped_dollar(cleaned)
     cleaned = _balance_latex_environments(cleaned)
+    cleaned = _fix_tabular_alignment(cleaned)
     return cleaned.strip()
 
 
@@ -680,7 +1041,18 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
 
         # Phase 0: 资料识别
         image_contents = []
-        if config['material_paths']:
+        pre_parsed_contents = config.get('pre_parsed_contents') or []
+        reuse_preparsed_contents = bool(config.get('reuse_preparsed_contents'))
+        if (
+            reuse_preparsed_contents
+            and isinstance(pre_parsed_contents, list)
+            and pre_parsed_contents
+            and config['material_paths']
+        ):
+            # 显式开启时才复用系统资料预解析结果；默认重新识别原图以减少细节损失。
+            image_contents = pre_parsed_contents
+            _update(task_id, f'已加载系统资料预解析结果（{len(image_contents)} 页）', tasks_dict)
+        elif config['material_paths']:
             total = len(config['material_paths'])
             for i, path in enumerate(config['material_paths']):
                 _update(task_id, f'正在识别资料图片 ({i + 1}/{total})...', tasks_dict)
@@ -700,8 +1072,9 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             assigned_indices = mapping.get(sec_name, [])
             
             if not assigned_indices:
-                # 如果没有分配图片，不给该章节任何图片材料，避免误插整页图
-                return ''
+                # 回退策略：分配为空时仍提供当前实验的全部识别文本，
+                # 避免模型误判“未读取到资料内容”。
+                return all_materials_text
             
             # 构建只包含分配图片的材料文本
             section_parts = []
@@ -716,43 +1089,57 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             f"=== 资料第{ic['page']}页 ===\n{ic['content']}" for ic in image_contents
         )
 
-        _update(task_id, '正在解析实验数据...', tasks_dict)
-        data_paths = config.get('data_paths') or []
-        excel_data, parse_diag = parse_excel_data(data_paths) if data_paths else ({}, {'parsed_files': [], 'failed_files': []})
-        data_text = format_excel_for_prompt(excel_data)
-        if data_paths:
-            parsed_count = len(parse_diag.get('parsed_files', []))
-            failed_count = len(parse_diag.get('failed_files', []))
-            _update(task_id, f'实验数据文件 {len(data_paths)} 个：成功解析 {parsed_count} 个，失败 {failed_count} 个', tasks_dict)
-        if data_paths and not data_text:
-            file_names = ', '.join(Path(p).name for p in data_paths[:5])
-            _update(
-                task_id,
-                f'⚠ 未从数据文件解析到可用表格（{file_names}），请优先使用 .xlsx/.csv 或检查工作表内容是否为空',
-                tasks_dict
-            )
-            if parse_diag.get('failed_files'):
-                first = parse_diag['failed_files'][0]
-                _update(task_id, f"⚠ 示例失败原因：{first.get('file')} -> {first.get('reason', '未知错误')[:120]}", tasks_dict)
-        elif data_paths:
-            _update(task_id, f'✓ 已解析 {len(excel_data)} 个数据文件', tasks_dict)
-        _update(task_id, '正在使用 matplotlib 生成候选数据图...', tasks_dict)
-        plot_infos, plot_diag = generate_data_plots(
-            config.get('data_paths') or [], config.get('task_dir'), with_diagnostics=True
-        )
-        for fs in (plot_diag.get('file_stats') or []):
-            if fs.get('status') in ('no_numeric', 'no_plot', 'empty', 'error', 'missing'):
+        framework_mode = bool(config.get('framework_mode'))
+        if framework_mode:
+            _update(task_id, '框架模式：跳过实验数据解析与绘图', tasks_dict)
+            data_paths = config.get('data_paths') or []
+            data_text = ''
+            plot_infos = []
+            config['plot_paths'] = []
+            config['plot_infos'] = []
+        else:
+            _update(task_id, '正在解析实验数据...', tasks_dict)
+            data_paths = config.get('data_paths') or []
+            excel_data, parse_diag = parse_excel_data(data_paths) if data_paths else ({}, {'parsed_files': [], 'failed_files': []})
+            data_text = format_excel_for_prompt(excel_data)
+            if data_paths:
+                parsed_count = len(parse_diag.get('parsed_files', []))
+                failed_count = len(parse_diag.get('failed_files', []))
+                _update(task_id, f'实验数据文件 {len(data_paths)} 个：成功解析 {parsed_count} 个，失败 {failed_count} 个', tasks_dict)
+            if data_paths and not data_text:
+                file_names = ', '.join(Path(p).name for p in data_paths[:5])
                 _update(
                     task_id,
-                    f"图表诊断：{fs.get('file', '未知文件')} -> {fs.get('reason', fs.get('status', '未生成图表'))}",
+                    f'⚠ 未从数据文件解析到可用表格（{file_names}），请优先使用 .xlsx/.csv 或检查工作表内容是否为空',
                     tasks_dict
                 )
-        _update(task_id, f"图表生成结果：{len(plot_infos)} 张候选图", tasks_dict)
-        config['plot_paths'] = [p['path'] for p in plot_infos]
-        config['plot_infos'] = plot_infos
+                if parse_diag.get('failed_files'):
+                    first = parse_diag['failed_files'][0]
+                    _update(task_id, f"⚠ 示例失败原因：{first.get('file')} -> {first.get('reason', '未知错误')[:120]}", tasks_dict)
+            elif data_paths:
+                _update(task_id, f'✓ 已解析 {len(excel_data)} 个数据文件', tasks_dict)
+            _update(task_id, '正在使用 matplotlib 生成候选数据图...', tasks_dict)
+            plot_infos, plot_diag = generate_data_plots(
+                config.get('data_paths') or [], config.get('task_dir'), with_diagnostics=True
+            )
+            for fs in (plot_diag.get('file_stats') or []):
+                if fs.get('status') in ('no_numeric', 'no_plot', 'empty', 'error', 'missing'):
+                    _update(
+                        task_id,
+                        f"图表诊断：{fs.get('file', '未知文件')} -> {fs.get('reason', fs.get('status', '未生成图表'))}",
+                        tasks_dict
+                    )
+            _update(task_id, f"图表生成结果：{len(plot_infos)} 张候选图", tasks_dict)
+            config['plot_paths'] = [p['path'] for p in plot_infos]
+            config['plot_infos'] = plot_infos
 
         # 仅在“没有上传结构化数据文件”时，才从原始数据记录单识别数据
-        raw_data_path = config.get('raw_data_path')
+        raw_data_paths = config.get('raw_data_paths', [])
+        # 兼容单张图片路径字符串
+        if isinstance(raw_data_paths, str):
+            raw_data_paths = [raw_data_paths]
+        # 取第一张用于 OCR
+        raw_data_path = raw_data_paths[0] if raw_data_paths else None
         use_raw_data_ocr = bool(config.get('use_raw_data_ocr'))
         if raw_data_path and data_paths:
             _update(task_id, '已上传 Excel/CSV 与原始数据记录单：按规则仅使用 Excel/CSV 计算，原始数据单仅用于文末附图', tasks_dict)
@@ -784,6 +1171,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         section_contents = {}
         text_model = config['text_model']
         sys_prompt = config['system_prompt']
+        thought_question_prompt = (config.get('thought_question_prompt') or '').strip()
 
         # Phase 1: 独立章节并行生成
         phase1_sections = ['实验名称', '实验目的', '实验原理', '实验内容', '实验仪器']
@@ -807,16 +1195,18 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
                 section_img_indices, True
             ))
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {executor.submit(_generate_one_section, t): t[3] for t in phase1_tasks}
-            for future in as_completed(futures):
-                sec_name, content, err = future.result()
-                if err:
-                    _update(task_id, f'「{sec_name}」生成失败: {err}', tasks_dict)
-                    section_contents[sec_name] = f'生成失败: {err}'
-                else:
-                    _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
-                    section_contents[sec_name] = _sanitize_section_content(content)
+        phase1_results = _run_section_tasks_with_adaptive_concurrency(
+            'Phase 1', phase1_tasks, 3, task_id, tasks_dict
+        )
+        for sec_name in phase1_sections:
+            content, err = phase1_results.get(sec_name, ('', '未知错误'))
+            if err:
+                err_msg = _format_generation_error(err)
+                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                section_contents[sec_name] = f'生成失败: {err_msg}'
+            else:
+                _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
+                section_contents[sec_name] = _sanitize_section_content(content)
 
         # Phase 2: 数据处理
         _update(task_id, 'Phase 2: 生成数据记录处理...', tasks_dict)
@@ -859,14 +1249,49 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         # 数据处理章节只使用分配给它或原始数据相关的图片
         data_section_materials = build_section_materials(data_sec, materials_text, image_section_mapping, image_contents)
         data_example = example_sections.get(data_sec, '')
-        data_content = _generate_section(
-            client, text_model, sys_prompt, data_sec,
-            data_section_materials, data_text, data_example, data_extra,
-            format_type, material_paths, plot_infos,
-            image_section_mapping.get(data_sec, []), False
-        )
-        section_contents[data_sec] = _sanitize_section_content(data_content)
-        _update(task_id, f'「{data_sec}」生成完成（长度: {len(data_content)} 字符）', tasks_dict)
+        if framework_mode:
+            if format_type == 'latex':
+                data_content = (
+                    "为便于测试，本节使用占位内容。\n"
+                    "\\begin{table}[H]\n"
+                    "\\centering\n"
+                    "\\begin{tabular}{ccc}\n"
+                    "\\toprule\n"
+                    "测量量 & 记号 & 数值(单位) \\\\\n"
+                    "\\midrule\n"
+                    " &  &  \\\\\n"
+                    " &  &  \\\\\n"
+                    "\\bottomrule\n"
+                    "\\end{tabular}\n"
+                    "\\end{table}\n\n"
+                    "核心计算公式占位：\\\\\n"
+                    "\\[ y = kx + b \\]\\\\\n"
+                    "\\[ \\bar{x}=\\frac{1}{n}\\sum_{i=1}^{n}x_i \\]\\\\\n"
+                    "\\[ u_r=\\frac{u}{x}\\times 100\\% \\]"
+                )
+            else:
+                data_content = (
+                    "为便于测试，本节使用占位内容。\n\n"
+                    "数据记录表（占位）：\n"
+                    "测量量    记号    数值(单位)\n"
+                    "        \n"
+                    "        \n\n"
+                    "核心计算公式占位：\n"
+                    "y = kx + b\n"
+                    "x_bar = (1/n) * sum(x_i)\n"
+                    "u_r = (u/x) * 100%"
+                )
+            section_contents[data_sec] = _sanitize_section_content(data_content)
+            _update(task_id, f'「{data_sec}」测试占位已写入', tasks_dict)
+        else:
+            data_content = _generate_section(
+                client, text_model, sys_prompt, data_sec,
+                data_section_materials, data_text, data_example, data_extra,
+                format_type, material_paths, plot_infos,
+                image_section_mapping.get(data_sec, []), False
+            )
+            section_contents[data_sec] = _sanitize_section_content(data_content)
+            _update(task_id, f'「{data_sec}」生成完成（长度: {len(data_content)} 字符）', tasks_dict)
 
         # Phase 3: 思考/结论类章节（不需要图片）
         phase3_sections = ['思考题', '讨论与分析', '实验结论']
@@ -877,14 +1302,29 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         phase3_tasks = []
         for sec_name in phase3_sections:
             if sec_name == '思考题':
-                extra = (
-                    f'请优先从实验资料中提取并完整回答“思考题/问答题/讨论题”。\n'
-                    f'若资料中出现多道题，需逐题作答并给出推理过程。\n'
-                    f'可参考以下数据处理摘要补充论据：\n'
-                    f'=== 数据处理摘要 ===\n{data_summary}\n'
-                    f'=== 摘要结束 ===\n'
-                    f'注意：本章节不需要插入任何图片。'
-                )
+                if thought_question_prompt:
+                    extra = (
+                        '以下是管理员人工整理的“思考题/问答题/讨论题”原文，请将其视为本章节的最高优先级输入，'
+                        '不要再依赖图片识别去重新提取题目，以免遗漏细节。\n'
+                        '要求：\n'
+                        '1. 按题目原有顺序逐题作答\n'
+                        '2. 题干中的条件、符号、限定语不要遗漏\n'
+                        '3. 若题目与实验数据相关，可结合下方数据处理摘要补充论据\n'
+                        '4. 不要编造未提供的新题目\n'
+                        f'=== 思考题原文开始 ===\n{thought_question_prompt}\n=== 思考题原文结束 ===\n'
+                        f'=== 数据处理摘要 ===\n{data_summary}\n'
+                        f'=== 摘要结束 ===\n'
+                        '注意：本章节不需要插入任何图片。'
+                    )
+                else:
+                    extra = (
+                        f'请优先从实验资料中提取并完整回答“思考题/问答题/讨论题”。\n'
+                        f'若资料中出现多道题，需逐题作答并给出推理过程。\n'
+                        f'可参考以下数据处理摘要补充论据：\n'
+                        f'=== 数据处理摘要 ===\n{data_summary}\n'
+                        f'=== 摘要结束 ===\n'
+                        f'注意：本章节不需要插入任何图片。'
+                    )
             else:
                 extra = (
                     f'请基于以下数据处理结果进行分析和总结：\n'
@@ -900,16 +1340,18 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
                 '', data_text, example_text, extra, format_type, [], plot_infos, [], False
             ))
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {executor.submit(_generate_one_section, t): t[3] for t in phase3_tasks}
-            for future in as_completed(futures):
-                sec_name, content, err = future.result()
-                if err:
-                    _update(task_id, f'「{sec_name}」生成失败: {err}', tasks_dict)
-                    section_contents[sec_name] = f'生成失败: {err}'
-                else:
-                    _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
-                    section_contents[sec_name] = _sanitize_section_content(content)
+        phase3_results = _run_section_tasks_with_adaptive_concurrency(
+            'Phase 3', phase3_tasks, 2, task_id, tasks_dict
+        )
+        for sec_name in phase3_sections:
+            content, err = phase3_results.get(sec_name, ('', '未知错误'))
+            if err:
+                err_msg = _format_generation_error(err)
+                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                section_contents[sec_name] = f'生成失败: {err_msg}'
+            else:
+                _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
+                section_contents[sec_name] = _sanitize_section_content(content)
 
         # 后处理：去除重复插入的图片标记
         _update(task_id, '正在处理图片重复问题...', tasks_dict)

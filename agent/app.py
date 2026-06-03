@@ -12,6 +12,7 @@ from flask import Flask, request, jsonify, send_file, render_template, Response,
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user, UserMixin
 from sqlalchemy import text, inspect, or_
+from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from openai import OpenAI
@@ -59,6 +60,7 @@ _load_local_env_file()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024
+RAW_DATA_IMAGE_MAX_BYTES = 1 * 1024 * 1024
 secret_key = os.environ.get('SECRET_KEY')
 if not secret_key:
     raise RuntimeError('SECRET_KEY environment variable is required')
@@ -81,6 +83,7 @@ OUTPUT_FOLDER.mkdir(exist_ok=True)
 FEEDBACK_FOLDER.mkdir(parents=True, exist_ok=True)
 
 tasks = {}
+MATERIAL_PARSE_LOCK = threading.Lock()
 FILE_CLEANUP_TTL_SECONDS = int(os.environ.get('FILE_CLEANUP_TTL_SECONDS', str(10 * 60)))
 FILE_CLEANUP_INTERVAL_SECONDS = int(os.environ.get('FILE_CLEANUP_INTERVAL_SECONDS', '60'))
 TASK_DIR_REGEX = re.compile(r'^[0-9a-fA-F-]{36}$')
@@ -116,6 +119,54 @@ def _normalize_storage_path(raw_path):
             return normalized
 
     return normalized.lstrip('./')
+
+
+def _can_reuse_preparsed_contents(material_paths, parsed_contents):
+    """
+    仅当预解析缓存与当前资料路径严格匹配时才复用，避免跨实验内容穿透。
+    匹配规则：
+    1) 两侧长度一致；
+    2) 每项 path 归一化后按顺序完全一致；
+    3) 每项 content 为非空字符串，且不是明显失败占位。
+    """
+    if not isinstance(material_paths, list) or not material_paths:
+        return False
+    if not isinstance(parsed_contents, list) or not parsed_contents:
+        return False
+    if len(material_paths) != len(parsed_contents):
+        return False
+
+    def _current_fingerprint(raw_path):
+        resolved = _resolve_storage_path(raw_path)
+        if not resolved or not resolved.exists() or not resolved.is_file():
+            return ''
+        st = resolved.stat()
+        return f'{st.st_size}:{int(st.st_mtime_ns)}'
+
+    normalized_material_paths = [_normalize_storage_path(p) for p in material_paths]
+    parsed_path_list = []
+    parsed_fingerprints = []
+    for item in parsed_contents:
+        if not isinstance(item, dict):
+            return False
+        raw_content = str(item.get('content') or '').strip()
+        if not raw_content:
+            return False
+        # 失败占位内容不应被当成有效缓存复用
+        if raw_content.startswith('(文件不存在') or raw_content.startswith('(解析失败'):
+            return False
+        parsed_path_list.append(_normalize_storage_path(item.get('path') or ''))
+        parsed_fingerprints.append(str(item.get('path_fingerprint') or '').strip())
+
+    if parsed_path_list != normalized_material_paths:
+        return False
+
+    # 旧缓存没有指纹时，强制失效并重跑，避免内容被覆盖后路径不变导致穿透
+    if any(not fp for fp in parsed_fingerprints):
+        return False
+
+    current_fingerprints = [_current_fingerprint(p) for p in material_paths]
+    return parsed_fingerprints == current_fingerprints
 
 
 def _resolve_storage_path(raw_path):
@@ -166,6 +217,8 @@ def _public_task_payload(task):
         'download_url': task.get('download_url'),
         'raw_url': task.get('raw_url'),
         'tex_url': task.get('tex_url'),
+        'result_mode': task.get('result_mode'),
+        'result_message': task.get('result_message'),
     }
 
 
@@ -305,6 +358,16 @@ class SystemMaterial(db.Model):
     # 文件路径存储
     material_paths = db.Column(db.JSON, default=list)  # 资料图片路径列表
     example_path = db.Column(db.String(500))  # 参考样例路径
+    thought_question_prompt = db.Column(db.Text)  # 管理员人工整理的思考题/问答题原文
+    # 预解析缓存（避免每次生成重复调用 Vision）
+    parsed_contents = db.Column(db.JSON, default=list)  # [{page, path, content}, ...]
+    parsed_at = db.Column(db.DateTime)
+    parse_error = db.Column(db.Text)
+    parse_status = db.Column(db.String(20), default='idle')  # idle / parsing / done / error
+    parse_total = db.Column(db.Integer, default=0)
+    parse_done = db.Column(db.Integer, default=0)
+    parse_started_at = db.Column(db.DateTime)
+    parse_finished_at = db.Column(db.DateTime)
 
     def get_category(self):
         """从 default_cover 中读取分类，避免数据库迁移"""
@@ -313,16 +376,28 @@ class SystemMaterial(db.Model):
         return '未分类'
     
     def to_dict(self):
+        parsed_count = len(self.parsed_contents) if isinstance(self.parsed_contents, list) else 0
+        material_count = len(self.material_paths) if self.material_paths else 0
         return {
             'id': self.id,
             'experiment_name': self.experiment_name,
             'category': self.get_category(),
             'description': self.description,
+            'thought_question_prompt': self.thought_question_prompt or '',
             'default_cover': self.default_cover,
             'uploaded_at': _to_utc_iso(self.uploaded_at),
             'is_active': self.is_active,
-            'material_count': len(self.material_paths) if self.material_paths else 0,
-            'has_example': bool(self.example_path)
+            'material_count': material_count,
+            'has_example': bool(self.example_path),
+            'has_thought_question_prompt': bool((self.thought_question_prompt or '').strip()),
+            'is_parsed': bool(material_count > 0 and parsed_count >= material_count and not self.parse_error),
+            'parsed_at': _to_utc_iso(self.parsed_at),
+            'parse_error': self.parse_error,
+            'parse_status': self.parse_status or 'idle',
+            'parse_total': int(self.parse_total or material_count),
+            'parse_done': int(self.parse_done or 0),
+            'parse_started_at': _to_utc_iso(self.parse_started_at),
+            'parse_finished_at': _to_utc_iso(self.parse_finished_at),
         }
 
 
@@ -423,6 +498,22 @@ class Announcement(db.Model):
             'created_by_email': self.author.email if self.author else None,
             'created_at': _to_utc_iso(self.created_at)
         }
+
+
+class MaintenanceConfig(db.Model):
+    """系统维护配置（单例）。"""
+    __tablename__ = 'maintenance_configs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    enabled = db.Column(db.Boolean, default=False)
+    title = db.Column(db.String(200), default='系统维护中')
+    content = db.Column(db.Text, default='')
+    start_at = db.Column(db.DateTime)
+    end_at = db.Column(db.DateTime)
+    updated_by = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='SET NULL'))
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    updater = db.relationship('User', foreign_keys=[updated_by], lazy=True)
 
 
 @login_manager.user_loader
@@ -542,6 +633,53 @@ def _to_utc_iso(dt):
     return dt.isoformat().replace('+00:00', 'Z')
 
 
+def _get_maintenance_config(create=False):
+    """读取维护配置（可选自动创建单例）。"""
+    cfg = MaintenanceConfig.query.order_by(MaintenanceConfig.id.asc()).first()
+    if not cfg and create:
+        cfg = MaintenanceConfig()
+        db.session.add(cfg)
+        db.session.commit()
+    return cfg
+
+
+def _is_maintenance_active(cfg, now_dt=None):
+    """判断维护是否生效。"""
+    if not cfg or not bool(cfg.enabled):
+        return False
+    now_dt = now_dt or datetime.now()
+    if cfg.start_at and now_dt < cfg.start_at:
+        return False
+    if cfg.end_at and now_dt > cfg.end_at:
+        return False
+    return True
+
+
+def _maintenance_to_dict(cfg):
+    """维护配置序列化。"""
+    if not cfg:
+        return {
+            'enabled': False,
+            'active': False,
+            'title': '系统维护中',
+            'content': '',
+            'start_at': None,
+            'end_at': None,
+            'updated_at': None,
+            'updated_by_email': None,
+        }
+    return {
+        'enabled': bool(cfg.enabled),
+        'active': _is_maintenance_active(cfg),
+        'title': (cfg.title or '系统维护中'),
+        'content': (cfg.content or ''),
+        'start_at': cfg.start_at.isoformat() if cfg.start_at else None,
+        'end_at': cfg.end_at.isoformat() if cfg.end_at else None,
+        'updated_at': _to_utc_iso(cfg.updated_at),
+        'updated_by_email': cfg.updater.email if cfg.updater else None,
+    }
+
+
 def _collect_active_task_dirs():
     """收集仍在处理中的任务目录，避免误删"""
     active_dirs = set()
@@ -552,6 +690,48 @@ def _collect_active_task_dirs():
             if task_dir:
                 active_dirs.add(str(Path(task_dir).resolve()))
     return active_dirs
+
+
+def _get_primary_admin_api_key():
+    """获取主管理员（admin）API Key；若不存在则回退到首个管理员。"""
+    try:
+        primary_admin = User.query.filter_by(email='admin', is_admin=True).first()
+        if not primary_admin:
+            primary_admin = User.query.filter_by(is_admin=True).order_by(User.id.asc()).first()
+        if not primary_admin:
+            return ''
+        return (primary_admin.get_api_key() or '').strip()
+    except Exception:
+        return ''
+
+
+def _ensure_task_work_dir(config_task_dir, task_id):
+    """
+    修订/重编译前确保任务工作目录可用。
+    - 兼容历史绝对路径；
+    - 目录被清理后可自动重建；
+    - 路径异常时回退到 uploads/<task_id>。
+    """
+    raw = (str(config_task_dir or '')).strip()
+    task_dir = None
+
+    if raw:
+        p = Path(raw)
+        if p.is_absolute():
+            task_dir = p
+        else:
+            task_dir = (BASE_DIR / p).resolve()
+
+    if task_dir is None:
+        task_dir = (UPLOAD_FOLDER / task_id).resolve()
+
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        task_dir = (UPLOAD_FOLDER / task_id).resolve()
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+    return str(task_dir)
 
 
 def cleanup_expired_files():
@@ -728,6 +908,23 @@ def welcome_md():
     return jsonify({'error': '文档不存在'}), 404
 
 
+@app.route('/tutorial-video')
+@login_required
+def tutorial_video():
+    """提供首页操作教学视频。"""
+    candidates = []
+    try:
+        for item in TEMPLATE_DIR.iterdir():
+            if item.is_file() and item.suffix.lower() == '.mp4':
+                candidates.append(item)
+    except Exception:
+        candidates = []
+    if candidates:
+        video_path = max(candidates, key=lambda p: p.stat().st_mtime)
+        return send_file(str(video_path), mimetype='video/mp4', conditional=True)
+    return jsonify({'error': '教学视频不存在'}), 404
+
+
 @app.route('/healthz')
 def healthz():
     """容器健康检查"""
@@ -757,6 +954,41 @@ def favicon():
 
 # ===================== Main Routes =====================
 
+@app.before_request
+def enforce_maintenance_mode():
+    """维护模式拦截：非管理员登录后仅可访问维护页与退出。"""
+    if not current_user.is_authenticated:
+        return None
+    if current_user.is_admin:
+        return None
+
+    cfg = _get_maintenance_config(create=False)
+    if not _is_maintenance_active(cfg):
+        return None
+
+    endpoint = (request.endpoint or '').strip()
+    if endpoint in ('static', 'logout', 'maintenance_page', 'favicon', 'healthz'):
+        return None
+
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'error': '系统维护中，请稍后再试',
+            'maintenance': _maintenance_to_dict(cfg)
+        }), 503
+
+    return redirect(url_for('maintenance_page'))
+
+
+@app.route('/maintenance')
+@login_required
+def maintenance_page():
+    """维护中提示页。"""
+    if current_user.is_admin:
+        return redirect(url_for('admin'))
+    cfg = _get_maintenance_config(create=False)
+    return render_template('maintenance.html', maintenance=_maintenance_to_dict(cfg))
+
+
 @app.route('/')
 def index():
     if not current_user.is_authenticated:
@@ -773,7 +1005,6 @@ def index():
     
     # 获取用户保存的参考样例
     user_examples = UserExample.query.filter_by(user_id=current_user.id).all()
-
     return render_template('index.html',
                           system_experiments=system_experiments,
                           system_experiments_data=system_experiments_data,
@@ -809,7 +1040,7 @@ def get_user_profile():
 @login_required
 def update_user_api_key():
     """更新用户 API Key"""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     api_key = data.get('api_key', '').strip()
     
     if not api_key:
@@ -1040,7 +1271,11 @@ def get_feedback_image():
 def get_system_materials():
     """获取系统实验资料列表（公开接口）"""
     materials = SystemMaterial.query.filter_by(is_active=True).all()
-    return jsonify([m.to_dict() for m in materials])
+    resp = jsonify([m.to_dict() for m in materials])
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @app.route('/api/system/materials/<int:material_id>')
@@ -1049,8 +1284,8 @@ def get_system_material_detail(material_id):
     material = SystemMaterial.query.get_or_404(material_id)
     if not material.is_active:
         return jsonify({'error': '该资料已禁用'}), 403
-    
-    return jsonify({
+
+    resp = jsonify({
         'id': material.id,
         'experiment_name': material.experiment_name,
         'category': material.get_category(),
@@ -1059,6 +1294,10 @@ def get_system_material_detail(material_id):
         'material_count': len(material.material_paths) if material.material_paths else 0,
         'has_example': bool(material.example_path)
     })
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 @app.route('/api/announcements/latest')
@@ -1150,12 +1389,17 @@ def generate():
     system_material_id = request.form.get('system_material_id')
     material_paths = []
     system_example_path = None
+    thought_question_prompt = ''
+    pre_parsed_contents = None
+    # 用户端默认重新使用系统资料预解析缓存；如需临时关闭，可显式传 0。
+    reuse_preparsed_contents = request.form.get('reuse_preparsed_contents', '1').strip() != '0'
     
     if system_material_id:
         material = SystemMaterial.query.get(system_material_id)
         if material and material.is_active:
             # 使用系统资料
             material_paths = []
+            thought_question_prompt = (material.thought_question_prompt or '').strip()
             for raw in (material.material_paths or []):
                 resolved = _resolve_storage_path(raw)
                 if resolved and resolved.exists():
@@ -1163,6 +1407,20 @@ def generate():
             resolved_example = _resolve_storage_path(material.example_path)
             if resolved_example and resolved_example.exists():
                 system_example_path = str(resolved_example)
+            # 仅在显式开启时复用系统资料预解析缓存。
+            if reuse_preparsed_contents and _can_reuse_preparsed_contents(
+                material.material_paths or [], material.parsed_contents
+            ):
+                pre_parsed_contents = []
+                for i, item in enumerate(material.parsed_contents):
+                    # 生成阶段只依赖 page/content，path 仅用于调试展示
+                    pre_parsed_contents.append({
+                        'page': int(item.get('page') or (i + 1)),
+                        'path': item.get('path') or '',
+                        'content': (item.get('content') or '').strip(),
+                    })
+            else:
+                pre_parsed_contents = None
     
     # 如果没有系统资料或系统资料为空，使用用户上传的资料
     if not material_paths:
@@ -1185,30 +1443,45 @@ def generate():
     if system_example_path and not example_paths:
         example_paths = [system_example_path]
     
-    # 处理原始数据记录单（单张图片）
-    raw_data_path = None
-    raw_data_file = request.files.get('raw_data')
-    if raw_data_file and raw_data_file.filename:
-        safe = f"raw_data_{_safe_upload_name(raw_data_file.filename, 'raw_data')}"
-        p = task_dir / safe
-        raw_data_file.save(p)
-        raw_data_path = str(p)
+    # 处理原始数据记录单（支持多张图片）
+    raw_data_paths = []
+    for idx, raw_data_file in enumerate(request.files.getlist('raw_data')):
+        if raw_data_file and raw_data_file.filename:
+            try:
+                raw_data_file.stream.seek(0, os.SEEK_END)
+                raw_size = raw_data_file.stream.tell()
+                raw_data_file.stream.seek(0)
+            except Exception:
+                raw_size = 0
+            if raw_size > RAW_DATA_IMAGE_MAX_BYTES:
+                size_mb = raw_size / (1024 * 1024)
+                return jsonify({
+                    'error': f'原始数据记录单图片不能超过 1MB（{Path(raw_data_file.filename).name}: {size_mb:.1f}MB），请压缩图片大小后重试'
+                }), 400
+            safe = f"raw_data_{idx}_{_safe_upload_name(raw_data_file.filename, 'raw_data')}"
+            p = task_dir / safe
+            raw_data_file.save(p)
+            raw_data_paths.append(str(p))
+
 
     # 仅在“没有上传 Excel/CSV 数据文件”时，才允许识别原始数据记录单；
     # 若同时上传了数据文件，则只在报告末尾附上原始数据记录单，不做 OCR 识别。
     has_structured_data_files = bool(data_paths)
-    use_raw_data_ocr = bool(raw_data_path and not has_structured_data_files)
-    append_raw_data_image = bool(raw_data_path and has_structured_data_files)
+    use_raw_data_ocr = bool(raw_data_paths and not has_structured_data_files)
+    append_raw_data_image = bool(raw_data_paths and has_structured_data_files)
 
     # 获取输出格式（latex 或 word）
-    format_type = request.form.get('output_format', 'latex').lower()
+    format_type = request.form.get('output_format', 'word').lower()
     if format_type not in ['latex', 'word']:
         format_type = 'latex'
+    # 框架模式（无数据生成）：允许无数据生成，并用占位内容填充数据处理章节
+    framework_mode = bool(request.form.get('framework_mode', '').strip() == '1')
 
     tasks[task_id] = {
         'status': 'processing', 'steps': [],
         'current_step': '准备中...', 'error': None,
         'download_url': None, 'raw_url': None,
+        'result_mode': None, 'result_message': None,
         'user_id': current_user.id,
     }
 
@@ -1220,14 +1493,22 @@ def generate():
         'example_paths': example_paths, 'cover_info': cover_info,
         'task_dir': str(task_dir),
         'format_type': format_type,
-        'raw_data_path': raw_data_path,
+        'raw_data_paths': raw_data_paths,
         'use_raw_data_ocr': use_raw_data_ocr,
         'append_raw_data_image': append_raw_data_image,
+        'thought_question_prompt': thought_question_prompt,
+        'pre_parsed_contents': pre_parsed_contents,
+        'reuse_preparsed_contents': reuse_preparsed_contents,
+        'framework_mode': framework_mode,
     }
     tasks[task_id]['config'] = config
 
-    # 根据格式类型调用不同的生成函数
-    if format_type == 'word':
+    # 仅上传原始数据记录单时，先提取数据并导出 xlsx 给用户确认，不直接生成报告
+    extraction_only = bool(raw_data_paths and not data_paths)
+    if extraction_only:
+        from ai_generator import run_raw_data_extraction
+        thread = threading.Thread(target=run_raw_data_extraction, args=(task_id, config, tasks))
+    elif format_type == 'word':
         thread = threading.Thread(target=run_word_generation, args=(task_id, config, tasks))
     else:
         thread = threading.Thread(target=run_latex_generation, args=(task_id, config, tasks))
@@ -1249,21 +1530,30 @@ def _extract_json_object(text):
     return text
 
 
-def _revise_sections_with_instruction(section_contents, instruction, config):
-    """根据用户修订意见，生成新的章节内容"""
+def _revise_sections_with_instruction(section_contents, instruction, config,
+                                      target_sections=None, progress_cb=None):
+    """根据用户修订意见，仅对选中章节生成新内容，其余保持原样。"""
+    if not target_sections:
+        target_sections = list(KNOWN_SECTIONS)
+
+    if progress_cb:
+        progress_cb(f'正在初始化修订模型客户端（修订 {len(target_sections)} 个章节）...')
     client = OpenAI(api_key=config['api_key'], base_url=config['base_url'])
-    section_json = json.dumps(section_contents, ensure_ascii=False)
+
+    subset = {k: section_contents.get(k, '') for k in target_sections}
+    section_json = json.dumps(subset, ensure_ascii=False)
+
     system_prompt = (
         "你是一个物理实验报告编辑助手。"
-        "你会根据用户的修订意见，对已有报告进行最小必要修改，保持其余内容风格和结构不变。"
+        "你会根据用户的修订意见，对指定章节进行修改，保持内容风格和结构不变。"
     )
     user_prompt = (
-        "下面是当前报告的章节内容（JSON）：\n"
+        "下面是需要修订的章节内容（JSON）：\n"
         f"{section_json}\n\n"
         "用户修订意见：\n"
         f"{instruction}\n\n"
-        "请返回一个 JSON 对象，键必须且只包含以下章节名：\n"
-        f"{KNOWN_SECTIONS}\n"
+        f"请返回一个 JSON 对象，键必须且只包含以下章节名：\n"
+        f"{target_sections}\n"
         "每个键对应修订后的章节正文（字符串）。"
         "不要返回任何解释性文字，不要使用 markdown 代码块。"
     )
@@ -1271,9 +1561,10 @@ def _revise_sections_with_instruction(section_contents, instruction, config):
     extra_body = None
     model_name = str(config.get('text_model') or '').lower()
     if model_name.startswith('kimi'):
-        # 通过 extra_body 透传厂商扩展参数，避免 SDK 关键字参数报错
         extra_body = {'thinking': {'type': 'disabled'}}
 
+    if progress_cb:
+        progress_cb('正在调用模型生成修订内容...')
     resp = client.chat.completions.create(
         model=config['text_model'],
         messages=[
@@ -1281,16 +1572,138 @@ def _revise_sections_with_instruction(section_contents, instruction, config):
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.6,
-        max_tokens=8192,
+        max_tokens=16384,
         extra_body=extra_body,
     )
     raw = resp.choices[0].message.content or ''
-    obj = json.loads(_extract_json_object(raw))
-    revised = {}
-    for section_name in KNOWN_SECTIONS:
-        value = obj.get(section_name, section_contents.get(section_name, ''))
-        revised[section_name] = value if isinstance(value, str) else str(value)
+    if progress_cb:
+        progress_cb('正在解析修订结果...')
+    json_text = _extract_json_object(raw)
+    try:
+        obj = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        if progress_cb:
+            progress_cb('检测到返回格式异常，正在自动修复 JSON...')
+        repair_prompt = (
+            "你是 JSON 修复器。请将下面文本修复为严格合法的 JSON 对象。\n"
+            f"必须且只保留这些键：{target_sections}\n"
+            "每个键的值都必须是字符串。\n"
+            "不要输出解释，不要 markdown 代码块，只输出 JSON。\n\n"
+            f"原始文本：\n{raw}"
+        )
+        repair_resp = client.chat.completions.create(
+            model=config['text_model'],
+            messages=[{"role": "user", "content": repair_prompt}],
+            temperature=0.0,
+            max_tokens=16384,
+            extra_body=extra_body,
+        )
+        repaired_raw = repair_resp.choices[0].message.content or ''
+        repaired_json_text = _extract_json_object(repaired_raw)
+        try:
+            obj = json.loads(repaired_json_text)
+        except json.JSONDecodeError as e2:
+            err_pos = max(0, int(getattr(e2, 'pos', 0)))
+            snippet_start = max(0, err_pos - 60)
+            snippet_end = min(len(repaired_json_text), err_pos + 60)
+            snippet = repaired_json_text[snippet_start:snippet_end].replace('\n', '\\n')
+            raise ValueError(
+                f'修订结果 JSON 解析失败（{e2.msg}，位置 {e2.lineno}:{e2.colno}），'
+                f'附近内容: {snippet}'
+            ) from e2
+
+    revised = dict(section_contents)
+    for section_name in target_sections:
+        value = obj.get(section_name)
+        if value is not None:
+            revised[section_name] = value if isinstance(value, str) else str(value)
     return revised
+
+
+def _run_revision_task(task_id, instruction, target_sections=None):
+    """后台执行修订任务，供 /api/revise 异步调用。"""
+    task = tasks.get(task_id)
+    if not task:
+        return
+
+    def _update(step):
+        if task_id in tasks:
+            tasks[task_id]['steps'].append(step)
+            tasks[task_id]['current_step'] = step
+
+    try:
+        config = task['config']
+        _update('正在准备修订任务...')
+        config['task_dir'] = _ensure_task_work_dir(config.get('task_dir'), task_id)
+
+        revised_sections = _revise_sections_with_instruction(
+            task['section_contents'],
+            instruction,
+            config,
+            target_sections=target_sections,
+            progress_cb=_update,
+        )
+        task['section_contents'] = revised_sections
+
+        now_tag = int(time.time())
+        format_type = config.get('format_type', 'latex')
+        _update('正在重新编译报告...')
+
+        if format_type == 'word':
+            word_path = build_word_document_from_template(
+                config['cover_info'], revised_sections, config['task_dir'],
+                config.get('raw_data_paths'), config.get('material_paths'), config.get('plot_paths'),
+                append_raw_data_image=config.get('append_raw_data_image', False),
+                progress_cb=_update,
+            )
+            out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.docx'
+            out_path = OUTPUT_FOLDER / out_name
+            from shutil import copy2
+            copy2(word_path, out_path)
+            raw_name = f'报告原文_修订_{task_id[:8]}_{now_tag}.md'
+            raw_path = OUTPUT_FOLDER / raw_name
+            raw_parts = [f'## 修订意见\n\n{instruction}\n']
+            for sec_name in KNOWN_SECTIONS:
+                raw_parts.append(f'## {sec_name}\n\n{revised_sections.get(sec_name, "(空)")}\n')
+            raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
+            task['download_url'] = f'/api/download/{out_name}'
+            task['raw_url'] = f'/api/download/{raw_name}'
+        else:
+            tex_path = build_latex_document(
+                config['cover_info'], revised_sections, config['task_dir'],
+                config.get('raw_data_paths'), config.get('material_paths'), config.get('plot_paths'),
+                config.get('append_raw_data_image', False)
+            )
+            out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.pdf'
+            out_path = str(OUTPUT_FOLDER / out_name)
+            success, compile_log = compile_latex(tex_path, out_path)
+            tex_save_name = f'报告源码_修订_{task_id[:8]}_{now_tag}.tex'
+            from shutil import copy2
+            copy2(tex_path, OUTPUT_FOLDER / tex_save_name)
+            raw_name = f'报告原文_修订_{task_id[:8]}_{now_tag}.md'
+            raw_path = OUTPUT_FOLDER / raw_name
+            raw_parts = [f'## 修订意见\n\n{instruction}\n']
+            for sec_name in KNOWN_SECTIONS:
+                raw_parts.append(f'## {sec_name}\n\n{revised_sections.get(sec_name, "(空)")}\n')
+            raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
+
+            if not success:
+                task['status'] = 'error'
+                task['error'] = '修订后 LaTeX 编译失败，请下载源码检查。'
+                task['download_url'] = f'/api/download/{tex_save_name}'
+                return
+
+            task['download_url'] = f'/api/download/{out_name}'
+            task['raw_url'] = f'/api/download/{raw_name}'
+            task['tex_url'] = f'/api/download/{tex_save_name}'
+
+        task['status'] = 'done'
+        _update('修订完成！')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        task['status'] = 'error'
+        task['error'] = f'修订失败: {str(e)}'
 
 
 @app.route('/api/revise/<task_id>', methods=['POST'])
@@ -1314,93 +1727,39 @@ def revise_report(task_id):
     if not instruction:
         return jsonify({'error': '请填写修订意见'}), 400
 
-    try:
-        task['status'] = 'processing'
-        task['current_step'] = '正在根据修订意见重写内容...'
-        task['steps'].append(task['current_step'])
+    target_sections = data.get('target_sections') or []
+    if not isinstance(target_sections, list) or not target_sections:
+        return jsonify({'error': '请至少选择一个需要修订的章节'}), 400
+    invalid = [s for s in target_sections if s not in KNOWN_SECTIONS]
+    if invalid:
+        return jsonify({'error': f'无效的章节名：{invalid}'}), 400
 
-        config = task['config']
-        revised_sections = _revise_sections_with_instruction(task['section_contents'], instruction, config)
-        task['section_contents'] = revised_sections
+    if task.get('status') == 'processing':
+        return jsonify({'error': '任务正在处理中，请稍后'}), 400
 
-        now_tag = int(time.time())
-        format_type = config.get('format_type', 'latex')
-        task['current_step'] = '正在重新编译报告...'
-        task['steps'].append(task['current_step'])
+    task['status'] = 'processing'
+    task['error'] = None
+    task['current_step'] = '已提交修订任务，等待开始...'
+    task['steps'].append(task['current_step'])
 
-        if format_type == 'word':
-            word_path = build_word_document_from_template(
-                config['cover_info'], revised_sections, config['task_dir'],
-                config.get('raw_data_path'), config.get('material_paths'), config.get('plot_paths'),
-                append_raw_data_image=config.get('append_raw_data_image', False)
-            )
-            out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.docx'
-            out_path = OUTPUT_FOLDER / out_name
-            from shutil import copy2
-            copy2(word_path, out_path)
-            raw_name = f'报告原文_修订_{task_id[:8]}_{now_tag}.md'
-            raw_path = OUTPUT_FOLDER / raw_name
-            raw_parts = [f'## 修订意见\n\n{instruction}\n']
-            for sec_name in KNOWN_SECTIONS:
-                raw_parts.append(f'## {sec_name}\n\n{revised_sections.get(sec_name, "(空)")}\n')
-            raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
-            task['download_url'] = f'/api/download/{out_name}'
-            task['raw_url'] = f'/api/download/{raw_name}'
-        else:
-            tex_path = build_latex_document(
-                config['cover_info'], revised_sections, config['task_dir'],
-                config.get('raw_data_path'), config.get('material_paths'), config.get('plot_paths'),
-                config.get('append_raw_data_image', False)
-            )
-            out_name = f'实验报告_修订_{task_id[:8]}_{now_tag}.pdf'
-            out_path = str(OUTPUT_FOLDER / out_name)
-            success, compile_log = compile_latex(tex_path, out_path)
-            tex_save_name = f'报告源码_修订_{task_id[:8]}_{now_tag}.tex'
-            from shutil import copy2
-            copy2(tex_path, OUTPUT_FOLDER / tex_save_name)
-            raw_name = f'报告原文_修订_{task_id[:8]}_{now_tag}.md'
-            raw_path = OUTPUT_FOLDER / raw_name
-            raw_parts = [f'## 修订意见\n\n{instruction}\n']
-            for sec_name in KNOWN_SECTIONS:
-                raw_parts.append(f'## {sec_name}\n\n{revised_sections.get(sec_name, "(空)")}\n')
-            raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
-
-            if not success:
-                task['status'] = 'error'
-                task['error'] = '修订后 LaTeX 编译失败，请下载源码检查。'
-                task['download_url'] = f'/api/download/{tex_save_name}'
-                return jsonify({'error': task['error'], 'download_url': task['download_url']}), 500
-
-            task['download_url'] = f'/api/download/{out_name}'
-            task['raw_url'] = f'/api/download/{raw_name}'
-            task['tex_url'] = f'/api/download/{tex_save_name}'
-
-        task['status'] = 'done'
-        task['current_step'] = '修订完成！'
-        task['steps'].append(task['current_step'])
-        return jsonify({
-            'success': True,
-            'download_url': task.get('download_url'),
-            'raw_url': task.get('raw_url'),
-            'tex_url': task.get('tex_url')
-        })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        task['status'] = 'error'
-        task['error'] = f'修订失败: {str(e)}'
-        return jsonify({'error': task['error']}), 500
+    thread = threading.Thread(target=_run_revision_task, args=(task_id, instruction, target_sections), daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'task_id': task_id})
 
 
 @app.route('/api/progress/<task_id>')
 @login_required
 def progress(task_id):
-    """获取任务进度（SSE 流）"""
+    """获取任务进度（支持 SSE 与 JSON 轮询）"""
     task = tasks.get(task_id)
     if not task:
         return jsonify({'error': '任务不存在'}), 404
     if not _can_access_task(task, current_user):
         return jsonify({'error': '无权限访问该任务'}), 403
+
+    # 轮询模式：返回单次 JSON，避免某些代理/网络环境下 SSE 被中断
+    if request.args.get('json') == '1':
+        return jsonify(_public_task_payload(task))
 
     def stream():
         while True:
@@ -1456,6 +1815,39 @@ def admin_stats():
         'template_count': Template.query.count(),
         'material_count': SystemMaterial.query.count()
     })
+
+
+@app.route('/api/admin/maintenance', methods=['GET', 'POST'])
+@login_required
+def admin_maintenance():
+    """管理员获取/更新系统维护配置。"""
+    if not current_user.is_admin:
+        return jsonify({'error': '需要管理员权限'}), 403
+
+    cfg = _get_maintenance_config(create=True)
+    if request.method == 'GET':
+        return jsonify(_maintenance_to_dict(cfg))
+
+    data = request.get_json() or {}
+    enabled = bool(data.get('enabled', False))
+    title = (data.get('title') or '系统维护中').strip() or '系统维护中'
+    content = (data.get('content') or '').strip()
+    start_at = _parse_datetime_text(data.get('start_at'))
+    end_at = _parse_datetime_text(data.get('end_at'))
+
+    if (data.get('start_at') and not start_at) or (data.get('end_at') and not end_at):
+        return jsonify({'error': '维护时间格式无效，请重新选择'}), 400
+    if start_at and end_at and start_at > end_at:
+        return jsonify({'error': '维护开始时间不能晚于结束时间'}), 400
+
+    cfg.enabled = enabled
+    cfg.title = title[:200]
+    cfg.content = content
+    cfg.start_at = start_at
+    cfg.end_at = end_at
+    cfg.updated_by = current_user.id
+    db.session.commit()
+    return jsonify({'success': True, 'maintenance': _maintenance_to_dict(cfg)})
 
 
 @app.route('/api/admin/cleanup', methods=['POST'])
@@ -1568,6 +1960,126 @@ def admin_toggle_admin(user_id):
     })
 
 
+def _parse_system_material(material_id, user_api_key=None):
+    """
+    后台预解析系统资料图片，缓存 Vision 识别结果。
+    只做“追加能力”，不影响已有生成流程；失败时记录 parse_error。
+    """
+    with MATERIAL_PARSE_LOCK:
+        with app.app_context():
+            material = SystemMaterial.query.get(material_id)
+            if not material:
+                print(f"[预解析] 资料不存在: {material_id}")
+                return
+            paths = material.material_paths or []
+
+            print(f"[预解析] 开始解析资料 '{material.experiment_name}', 图片数量: {len(paths)}")
+
+            material.parse_status = 'parsing'
+            material.parse_total = len(paths)
+            material.parse_done = 0
+            material.parse_started_at = datetime.utcnow()
+            material.parse_finished_at = None
+            material.parse_error = None
+            db.session.commit()
+
+            if not paths:
+                material.parsed_contents = []
+                material.parsed_at = datetime.utcnow()
+                material.parse_error = None
+                material.parse_status = 'done'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                return
+
+            # 优先使用系统 API Key，回退到用户提供的 API Key
+            api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
+            if not api_key and user_api_key:
+                api_key = user_api_key.strip()
+                print(f"[预解析] 使用传入的 API Key 进行解析")
+            if not api_key:
+                admin_api_key = _get_primary_admin_api_key()
+                if admin_api_key:
+                    api_key = admin_api_key
+                    print("[预解析] 使用主管理员 API Key 进行解析")
+
+            if not api_key:
+                material.parse_error = '未配置 SYSTEM_API_KEY/MOONSHOT_API_KEY，且无用户或主管理员 API Key，无法预解析'
+                material.parse_status = 'error'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                print(f"[预解析] 错误: 未配置 API Key")
+                return
+
+            base_url = (os.environ.get('SYSTEM_BASE_URL') or 'https://api.moonshot.cn/v1').strip()
+            # 使用32k vision模型
+            vision_model = (os.environ.get('VISION_MODEL') or 'moonshot-v1-32k-vision-preview').strip()
+
+            print(f"[预解析] 使用 API: {base_url}, 模型: {vision_model}")
+
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+            try:
+                from ai_generator import extract_single_image
+
+                parsed = []
+                for i, raw in enumerate(paths):
+                    print(f"[预解析] 正在处理第 {i+1}/{len(paths)} 张图片: {raw}")
+
+                    resolved = _resolve_storage_path(raw)
+                    if not resolved or not resolved.exists():
+                        print(f"[预解析] 文件不存在: {raw}")
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': '',
+                            'content': '(文件不存在，跳过解析)',
+                        })
+                        material.parse_done = i + 1
+                        db.session.commit()
+                        continue
+
+                    try:
+                        content = extract_single_image(str(resolved), client, vision_model)
+                        st = resolved.stat()
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': f'{st.st_size}:{int(st.st_mtime_ns)}',
+                            'content': (content or '').strip(),
+                        })
+                        print(f"[预解析] 第 {i+1} 张图片解析完成，长度: {len(content or '')}")
+                    except Exception as img_err:
+                        print(f"[预解析] 第 {i+1} 张图片解析失败: {img_err}")
+                        parsed.append({
+                            'page': i + 1,
+                            'path': str(raw),
+                            'path_fingerprint': '',
+                            'content': f'(解析失败: {str(img_err)[:100]})',
+                        })
+
+                    material.parse_done = i + 1
+                    db.session.commit()
+                    if i < len(paths) - 1:
+                        time.sleep(0.5)
+
+                material.parsed_contents = parsed
+                material.parsed_at = datetime.utcnow()
+                material.parse_error = None
+                material.parse_status = 'done'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+                print(f"[预解析] 资料 '{material.experiment_name}' 解析完成")
+            except Exception as e:
+                print(f"[预解析] 解析过程出错: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                material.parse_error = f'{type(e).__name__}: {str(e)[:200]}'
+                material.parse_status = 'error'
+                material.parse_finished_at = datetime.utcnow()
+                db.session.commit()
+
+
 @app.route('/api/admin/materials', methods=['GET', 'POST'])
 @login_required
 def admin_materials():
@@ -1582,6 +2094,7 @@ def admin_materials():
     # POST - 创建新资料
     experiment_name = request.form.get('experiment_name', '').strip()
     description = request.form.get('description', '').strip()
+    thought_question_prompt = request.form.get('thought_question_prompt', '').strip()
     category = request.form.get('category', '未分类').strip() or '未分类'
     is_active = request.form.get('is_active', 'true') == 'true'
     default_cover = request.form.get('default_cover', '{}')
@@ -1598,17 +2111,45 @@ def admin_materials():
         default_cover = {}
     default_cover['category'] = category
     
-    # 保存上传的文件
-    task_dir = UPLOAD_FOLDER / f"material_{int(time.time())}"
+    # 保存上传的文件（使用 UUID 隔离目录，避免同秒上传导致跨实验覆盖）
+    task_dir = UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}"
     task_dir.mkdir(parents=True, exist_ok=True)
     
+    MAX_IMAGE_SIZE_MB = 20  # 单张图片最大 20MB
     material_paths = []
-    for f in request.files.getlist('materials'):
+    skipped_files = []
+    
+    # 调试日志
+    all_files = request.files.getlist('materials')
+    app.logger.info(f"[admin-upload] Received {len(all_files)} files for '{experiment_name}'")
+    
+    for f in all_files:
         if f.filename:
-            safe = f"material_{len(material_paths)}_{_safe_upload_name(f.filename, 'material')}"
-            p = task_dir / safe
-            f.save(p)
-            material_paths.append(_to_storage_path(p))
+            # 检查文件大小 - 使用安全的方式
+            try:
+                # 读取内容到内存以获取大小，然后重新包装
+                content = f.read()
+                file_size_mb = len(content) / (1024 * 1024)
+                
+                if file_size_mb > MAX_IMAGE_SIZE_MB:
+                    skipped_files.append(f"{f.filename} ({file_size_mb:.1f}MB)")
+                    continue
+                
+                # 保存文件
+                safe = f"material_{len(material_paths)}_{_safe_upload_name(f.filename, 'material')}"
+                p = task_dir / safe
+                with open(p, 'wb') as dest:
+                    dest.write(content)
+                material_paths.append(_to_storage_path(p))
+            except Exception as e:
+                app.logger.error(f"[admin-upload] Failed to process file {f.filename}: {e}")
+                skipped_files.append(f"{f.filename} (处理失败: {str(e)[:50]})")
+    
+    if skipped_files:
+        return jsonify({'error': f"以下文件超过 {MAX_IMAGE_SIZE_MB}MB 限制或处理失败:\n" + "\n".join(skipped_files)}), 400
+    
+    if not material_paths:
+        return jsonify({'error': '没有有效文件被上传'}), 400
     
     example_path = None
     example_file = request.files.get('example')
@@ -1621,6 +2162,7 @@ def admin_materials():
     material = SystemMaterial(
         experiment_name=experiment_name,
         description=description,
+        thought_question_prompt=thought_question_prompt,
         is_active=is_active,
         default_cover=default_cover,
         material_paths=material_paths,
@@ -1628,8 +2170,12 @@ def admin_materials():
     )
     db.session.add(material)
     db.session.commit()
-    
-    return jsonify({'success': True, 'id': material.id})
+
+    # 自动触发后台预解析（异步，不阻塞上传）
+    parse_thread = threading.Thread(target=_parse_system_material, args=(material.id,), daemon=True)
+    parse_thread.start()
+
+    return jsonify({'success': True, 'id': material.id, 'parsing_started': True})
 
 
 @app.route('/api/admin/materials/<int:material_id>', methods=['PUT', 'DELETE'])
@@ -1657,6 +2203,10 @@ def admin_material_detail(material_id):
     # PUT - 更新资料
     material.experiment_name = request.form.get('experiment_name', material.experiment_name).strip()
     material.description = request.form.get('description', material.description).strip()
+    material.thought_question_prompt = request.form.get(
+        'thought_question_prompt',
+        material.thought_question_prompt or ''
+    ).strip()
     category = request.form.get('category', '').strip()
     material.is_active = request.form.get('is_active', 'true') == 'true'
 
@@ -1669,12 +2219,104 @@ def admin_material_detail(material_id):
 
     # 支持单独更新分类
     if category:
-        if not isinstance(material.default_cover, dict):
-            material.default_cover = {}
-        material.default_cover['category'] = category
+        # 重要：JSON 字段需要“新对象赋值 + 标记修改”，避免 ORM 漏检更新
+        current_cover = material.default_cover
+        if isinstance(current_cover, str):
+            try:
+                current_cover = json.loads(current_cover) if current_cover else {}
+            except Exception:
+                current_cover = {}
+        if not isinstance(current_cover, dict):
+            current_cover = {}
+        new_cover = dict(current_cover)
+        new_cover['category'] = category
+        material.default_cover = new_cover
+        flag_modified(material, 'default_cover')
 
+    # 追加新图片（如果上传了）
+    append_mode = request.form.get('append_mode') == 'true'
+    material_files = request.files.getlist('materials')
+    uploaded_new_files = False
+    
+    if material_files and any(f.filename for f in material_files):
+        # 获取现有资料的目录
+        existing_paths = material.material_paths or []
+        if existing_paths:
+            # 使用第一个现有文件的目录
+            first_path = _resolve_storage_path(existing_paths[0])
+            task_dir = first_path.parent if first_path else (UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}")
+        else:
+            task_dir = UPLOAD_FOLDER / f"material_{uuid.uuid4().hex}"
+        
+        task_dir.mkdir(parents=True, exist_ok=True)
+        
+        MAX_IMAGE_SIZE_MB = 20
+        new_paths = []
+        skipped_files = []
+        
+        for f in material_files:
+            if f.filename:
+                try:
+                    content = f.read()
+                    file_size_mb = len(content) / (1024 * 1024)
+                    
+                    if file_size_mb > MAX_IMAGE_SIZE_MB:
+                        skipped_files.append(f"{f.filename} ({file_size_mb:.1f}MB)")
+                        continue
+                    
+                    safe = f"material_{len(existing_paths) + len(new_paths)}_{_safe_upload_name(f.filename, 'material')}"
+                    p = task_dir / safe
+                    with open(p, 'wb') as dest:
+                        dest.write(content)
+                    new_paths.append(_to_storage_path(p))
+                except Exception as e:
+                    app.logger.error(f"[admin-update] Failed to process file {f.filename}: {e}")
+                    skipped_files.append(f"{f.filename} (处理失败)")
+        
+        if new_paths:
+            # 追加到现有路径
+            material.material_paths = existing_paths + new_paths
+            app.logger.info(f"[admin-update] Appended {len(new_paths)} images to material {material_id}")
+            uploaded_new_files = True
+    
+    # 先提交基本信息的修改（分类、名称等）
     db.session.commit()
+
+    # 若更新了资料图片，自动触发后台预解析，确保生成侧可复用缓存
+    if uploaded_new_files:
+        try:
+            parse_thread = threading.Thread(target=_parse_system_material, args=(material.id,), daemon=True)
+            parse_thread.start()
+        except Exception as e:
+            app.logger.error(f"[admin-update] Failed to start parse thread for material {material_id}: {e}")
+    
+    # 如果有文件上传失败，在这里返回警告（但基本信息已保存）
+    if material_files and any(f.filename for f in material_files):
+        skipped_files = locals().get('skipped_files', [])
+        if skipped_files:
+            return jsonify({'success': True, 'warning': f"部分文件上传失败: {', '.join(skipped_files)}"}), 200
+    
     return jsonify({'success': True})
+
+
+@app.route('/api/admin/materials/<int:material_id>/parse', methods=['POST'])
+@login_required
+def admin_material_parse(material_id):
+    """手动触发系统资料预解析（管理员）"""
+    if not current_user.is_admin:
+        return jsonify({'error': '需要管理员权限'}), 403
+    material = SystemMaterial.query.get_or_404(material_id)
+    
+    # 系统 API Key 与管理员 API Key 至少提供一个即可
+    user_api_key = current_user.get_api_key()
+    system_api_key = (os.environ.get('SYSTEM_API_KEY') or os.environ.get('MOONSHOT_API_KEY') or '').strip()
+    primary_admin_api_key = _get_primary_admin_api_key()
+    if not system_api_key and not user_api_key and not primary_admin_api_key:
+        return jsonify({'error': '请先配置 SYSTEM_API_KEY/MOONSHOT_API_KEY，或在首页设置管理员/主管理员 API Key'}), 400
+
+    parse_thread = threading.Thread(target=_parse_system_material, args=(material.id, user_api_key), daemon=True)
+    parse_thread.start()
+    return jsonify({'success': True, 'message': '预解析任务已启动'})
 
 
 @app.route('/api/admin/feedback', methods=['GET'])
@@ -2018,6 +2660,7 @@ def init_database():
     with app.app_context():
         db.create_all()
         ensure_announcement_schema()
+        ensure_system_material_schema()
         migrate_stored_paths_to_relative()
         init_admin()
 
@@ -2042,6 +2685,45 @@ def ensure_announcement_schema():
         alter_sqls.append("ALTER TABLE announcements ADD COLUMN start_at DATETIME")
     if 'end_at' not in columns:
         alter_sqls.append("ALTER TABLE announcements ADD COLUMN end_at DATETIME")
+
+    if not alter_sqls:
+        return
+
+    for sql in alter_sqls:
+        db.session.execute(text(sql))
+    db.session.commit()
+
+
+def ensure_system_material_schema():
+    """
+    向后兼容：
+    为 system_materials 自动补齐预解析字段，避免改代码后因缺列启动失败。
+    """
+    inspector = inspect(db.engine)
+    table_names = set(inspector.get_table_names())
+    if 'system_materials' not in table_names:
+        return
+
+    columns = {col['name'] for col in inspector.get_columns('system_materials')}
+    alter_sqls = []
+    if 'parsed_contents' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parsed_contents JSON")
+    if 'parsed_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parsed_at DATETIME")
+    if 'parse_error' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_error TEXT")
+    if 'parse_status' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_status VARCHAR(20)")
+    if 'parse_total' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_total INTEGER DEFAULT 0")
+    if 'parse_done' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_done INTEGER DEFAULT 0")
+    if 'parse_started_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_started_at DATETIME")
+    if 'parse_finished_at' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN parse_finished_at DATETIME")
+    if 'thought_question_prompt' not in columns:
+        alter_sqls.append("ALTER TABLE system_materials ADD COLUMN thought_question_prompt TEXT")
 
     if not alter_sqls:
         return
@@ -2077,6 +2759,37 @@ def migrate_stored_paths_to_relative():
         if new_example != (m.example_path or ''):
             m.example_path = new_example or None
             changed += 1
+
+        if isinstance(m.parsed_contents, list):
+            new_parsed = []
+            parsed_changed = False
+            for item in m.parsed_contents:
+                if not isinstance(item, dict):
+                    new_parsed.append(item)
+                    continue
+                copied = dict(item)
+                raw_path = copied.get('path')
+                if isinstance(raw_path, str):
+                    normalized = _normalize_storage_path(raw_path)
+                    if normalized != raw_path:
+                        copied['path'] = normalized
+                        parsed_changed = True
+                # 向后兼容：为历史预解析缓存补齐指纹字段，保证可被复用
+                # 指纹规则与 _can_reuse_preparsed_contents 一致：size:mtime_ns
+                fp = str(copied.get('path_fingerprint') or '').strip()
+                if not fp and isinstance(copied.get('path'), str) and copied.get('path'):
+                    try:
+                        resolved = _resolve_storage_path(copied.get('path'))
+                        if resolved and resolved.exists() and resolved.is_file():
+                            st = resolved.stat()
+                            copied['path_fingerprint'] = f'{st.st_size}:{int(st.st_mtime_ns)}'
+                            parsed_changed = True
+                    except Exception:
+                        pass
+                new_parsed.append(copied)
+            if parsed_changed:
+                m.parsed_contents = new_parsed
+                changed += 1
 
     feedbacks = Feedback.query.all()
     for row in feedbacks:

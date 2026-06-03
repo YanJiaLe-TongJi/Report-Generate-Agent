@@ -526,7 +526,9 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
         '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
         '%%COVER_STUDENT_ID%%': cover_info.get('student_id', ''),
         '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_TEAM_NUMBER%%': cover_info.get('group_number', ''),
         '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
+        '%%COVER_EXPERIMENT_DATA%%': cover_info.get('experiment_date', ''),
     }
     
     # 处理章节占位符
@@ -550,9 +552,10 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
     paragraphs_to_remove = []
     
     # 遍历文档中的所有段落，替换占位符
-    for i, para in enumerate(doc.paragraphs):
+    # 使用 list() 创建副本避免修改时影响迭代
+    for i, para in enumerate(list(doc.paragraphs)):
         full_text = ''.join(run.text for run in para.runs)
-        
+
         for placeholder, content in all_placeholders.items():
             if placeholder in full_text:
                 # 清空段落现有内容
@@ -612,7 +615,8 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
     def _normalize_label(text):
         return re.sub(r'[\s　]+', '', (text or '').strip())
 
-    for idx, para in enumerate(doc.paragraphs):
+    # 使用 list() 创建副本避免修改时影响迭代
+    for idx, para in enumerate(list(doc.paragraphs)):
         if idx >= first_section_idx:
             break
         normalized = _normalize_label(para.text)
@@ -621,15 +625,168 @@ def fill_template_with_content(doc, cover_info, section_contents, raw_data_path=
 
         field_key, display_label = label_rules[normalized]
         value = (cover_info.get(field_key, '') or '').strip()
-        if not value:
-            continue
 
         for run in para.runs:
             run.text = ''
         label_run = para.add_run(f'{display_label}    ')
         set_chinese_font(label_run, '黑体', 12, bold=True)
-        value_run = para.add_run(value)
-        set_chinese_font(value_run, '宋体', 12)
+        if value:
+            value_run = para.add_run(value)
+            set_chinese_font(value_run, '宋体', 12)
+
+
+def fill_cover_info_in_template(doc, cover_info):
+    """
+    在模板中填充封面信息
+    查找并替换封面相关的占位符和标签
+    """
+    if not cover_info:
+        return
+
+    # 定义封面占位符映射（移除空值检查，允许空值覆盖占位符）
+    cover_placeholders = {
+        '%%COVER_EXPERIMENT_NAME%%': cover_info.get('experiment_name', ''),
+        '%%COVER_STUDENT_NAME%%': cover_info.get('student_name', ''),
+        '%%COVER_STUDENT_ID%%': cover_info.get('student_id', ''),
+        '%%COVER_GROUP_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_TEAM_NUMBER%%': cover_info.get('group_number', ''),
+        '%%COVER_EXPERIMENT_DATE%%': cover_info.get('experiment_date', ''),
+        '%%COVER_EXPERIMENT_DATA%%': cover_info.get('experiment_date', ''),
+    }
+
+    # 标签规则（用于没有占位符的情况）
+    label_rules = {
+        '实验名称': ('experiment_name', '实验名称'),
+        '学生姓名': ('student_name', '学生姓名'),
+        '学号': ('student_id', '学　　号'),
+        '组号': ('group_number', '组    号'),
+        '实验日期': ('experiment_date', '实验日期'),
+    }
+
+    def _normalize_label(text):
+        return re.sub(r'[\s　]+', '', (text or '').strip())
+
+    # 查找第一个章节标题的位置（封面信息在此之前）
+    first_section_idx = len(doc.paragraphs)
+    for idx, para in enumerate(doc.paragraphs):
+        if para.text.strip() in KNOWN_SECTIONS:
+            first_section_idx = idx
+            break
+
+    def _replace_placeholder_in_runs(runs, placeholder, value):
+        """仅替换占位符文本，尽量保留原有 run 样式（如下划线横线、字体）。"""
+        replaced = False
+        for run in runs:
+            if placeholder in (run.text or ''):
+                run.text = (run.text or '').replace(placeholder, value or '')
+                replaced = True
+        return replaced
+
+    def _replace_placeholder_in_paragraph(para, placeholder, value):
+        """优先按 run 替换；占位符跨 run 时仅替换命中区间，保留其余 run 样式。"""
+        full_text = ''.join(run.text for run in para.runs)
+        if placeholder not in full_text:
+            return False
+        if _replace_placeholder_in_runs(para.runs, placeholder, value):
+            return True
+        # 占位符被拆分到多个 run：只改占位符覆盖的 run，避免吞掉后续下划线 run
+        runs = list(para.runs)
+        if not runs:
+            para.add_run(full_text.replace(placeholder, value or ''))
+            return True
+
+        start = full_text.find(placeholder)
+        end = start + len(placeholder)
+
+        spans = []
+        cursor = 0
+        for idx, run in enumerate(runs):
+            text = run.text or ''
+            spans.append((idx, cursor, cursor + len(text)))
+            cursor += len(text)
+
+        start_run_idx = None
+        end_run_idx = None
+        for idx, s, e in spans:
+            if start_run_idx is None and s <= start < e:
+                start_run_idx = idx
+            if s < end <= e:
+                end_run_idx = idx
+                break
+
+        if start_run_idx is None or end_run_idx is None:
+            # 理论不应发生；保底不清空其他 run
+            runs[0].text = full_text.replace(placeholder, value or '')
+            return True
+
+        start_run = runs[start_run_idx]
+        end_run = runs[end_run_idx]
+        start_run_abs = spans[start_run_idx][1]
+        end_run_abs = spans[end_run_idx][1]
+
+        prefix = (start_run.text or '')[: start - start_run_abs]
+        suffix = (end_run.text or '')[end - end_run_abs :]
+
+        if start_run_idx == end_run_idx:
+            start_run.text = prefix + (value or '') + suffix
+            return True
+
+        start_run.text = prefix + (value or '')
+        for i in range(start_run_idx + 1, end_run_idx):
+            runs[i].text = ''
+        end_run.text = suffix
+        return True
+
+    # 遍历封面区域的段落，替换占位符或标签（不清空原 run，避免破坏横线/字体）
+    for idx, para in enumerate(list(doc.paragraphs)):
+        if idx >= first_section_idx:
+            break
+
+        full_text = ''.join(run.text for run in para.runs)
+
+        # 1) 优先替换占位符
+        placeholder_found = False
+        for placeholder, value in cover_placeholders.items():
+            if placeholder in full_text:
+                placeholder_found = _replace_placeholder_in_paragraph(para, placeholder, value)
+                break
+
+        # 2) 无占位符时，识别标签并仅追加值，不改动现有装饰
+        if not placeholder_found:
+            normalized = _normalize_label(full_text)
+            if normalized in label_rules:
+                field_key, _display_label = label_rules[normalized]
+                value = (cover_info.get(field_key) or '').strip()
+                if value and value not in full_text:
+                    value_run = para.add_run(f' {value}')
+                    set_chinese_font(value_run, '宋体', 12)
+
+    # 处理表格中的封面信息
+    for table in doc.tables:
+        for row_idx, row in enumerate(table.rows):
+            if row_idx > 3:  # 只检查前几行
+                break
+            for cell in row.cells:
+                cell_text = ''.join(run.text for para in cell.paragraphs for run in para.runs)
+
+                # 1) 替换占位符（保持单元格原格式）
+                placeholder_found = False
+                for placeholder, value in cover_placeholders.items():
+                    if placeholder in cell_text:
+                        for para in cell.paragraphs:
+                            if _replace_placeholder_in_paragraph(para, placeholder, value):
+                                placeholder_found = True
+                        break
+
+                # 2) 标签模式：仅追加值，避免清空单元格后格式丢失
+                if not placeholder_found:
+                    normalized = _normalize_label(cell_text)
+                    if normalized in label_rules and cell.paragraphs:
+                        field_key, _display_label = label_rules[normalized]
+                        value = (cover_info.get(field_key) or '').strip()
+                        if value and value not in cell_text:
+                            value_run = cell.paragraphs[0].add_run(f' {value}')
+                            set_chinese_font(value_run, '宋体', 12)
 
 
 def strip_template_section_skeleton(doc):
@@ -659,7 +816,7 @@ def build_word_document_from_template(
     cover_info,
     section_contents,
     task_dir,
-    raw_data_path=None,
+    raw_data_paths=None,
     material_paths=None,
     plot_paths=None,
     append_raw_data_image=False,
@@ -674,7 +831,10 @@ def build_word_document_from_template(
     if template_path.exists():
         # 使用模板作为基础
         doc = Document(str(template_path))
-        # 保留模板首页信息给用户手工填写，不自动回填封面字段
+        
+        # 回填封面信息（即使使用模板也要填充用户填写的封面信息）
+        fill_cover_info_in_template(doc, cover_info)
+        
         had_template_sections = strip_template_section_skeleton(doc)
         # 模板不含章节骨架时，回退为追加新页写入
         if not had_template_sections:
@@ -762,15 +922,28 @@ def build_word_document_from_template(
                 i += 1
         
         # 处理原始数据记录单（按开关决定是否在文档末尾添加）
-        if append_raw_data_image and raw_data_path and Path(raw_data_path).exists():
-            try:
-                doc.add_page_break()
-                add_section_heading(doc, '原始数据记录单')
-                doc.add_picture(str(raw_data_path), width=Inches(5.5))
-                last_para = doc.paragraphs[-1]
-                last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            except Exception as e:
-                print(f"[WARNING] 插入原始数据记录单图片失败: {e}")
+        if append_raw_data_image and raw_data_paths:
+            # 兼容单张图片路径字符串或列表
+            if isinstance(raw_data_paths, str):
+                raw_data_paths = [raw_data_paths]
+
+            valid_paths = [p for p in raw_data_paths if p and Path(p).exists()]
+            if valid_paths:
+                try:
+                    doc.add_page_break()
+                    add_section_heading(doc, '原始数据记录单')
+                    for idx, raw_data_path in enumerate(valid_paths):
+                        try:
+                            doc.add_picture(str(raw_data_path), width=Inches(5.5))
+                            last_para = doc.paragraphs[-1]
+                            last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            # 多张图片时添加间距
+                            if idx < len(valid_paths) - 1:
+                                doc.add_paragraph()
+                        except Exception as e:
+                            print(f"[WARNING] 插入原始数据记录单图片失败 {raw_data_path}: {e}")
+                except Exception as e:
+                    print(f"[WARNING] 处理原始数据记录单失败: {e}")
     else:
         # 创建新文档（原有逻辑）
         doc = Document()
@@ -903,15 +1076,28 @@ def build_word_document_from_template(
                 i += 1
         
         # 在文档末尾添加原始数据记录单（按开关决定）
-        if append_raw_data_image and raw_data_path and Path(raw_data_path).exists():
-            try:
-                doc.add_page_break()
-                add_section_heading(doc, '原始数据记录单')
-                doc.add_picture(str(raw_data_path), width=Inches(5.5))
-                last_para = doc.paragraphs[-1]
-                last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            except Exception as e:
-                print(f"[WARNING] 插入原始数据记录单图片失败: {e}")
+        if append_raw_data_image and raw_data_paths:
+            # 兼容单张图片路径字符串或列表
+            if isinstance(raw_data_paths, str):
+                raw_data_paths = [raw_data_paths]
+
+            valid_paths = [p for p in raw_data_paths if p and Path(p).exists()]
+            if valid_paths:
+                try:
+                    doc.add_page_break()
+                    add_section_heading(doc, '原始数据记录单')
+                    for idx, raw_data_path in enumerate(valid_paths):
+                        try:
+                            doc.add_picture(str(raw_data_path), width=Inches(5.5))
+                            last_para = doc.paragraphs[-1]
+                            last_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                            # 多张图片时添加间距
+                            if idx < len(valid_paths) - 1:
+                                doc.add_paragraph()
+                        except Exception as e:
+                            print(f"[WARNING] 插入原始数据记录单图片失败 {raw_data_path}: {e}")
+                except Exception as e:
+                    print(f"[WARNING] 处理原始数据记录单失败: {e}")
     
     # 保存文档
     if progress_cb:
@@ -946,7 +1132,7 @@ def run_word_generation(task_id, config, tasks_dict):
         _update(task_id, '正在构建 Word 文档...')
         word_path = build_word_document_from_template(
             config['cover_info'], section_contents, config['task_dir'],
-            config.get('raw_data_path'),
+            config.get('raw_data_paths'),
             config.get('material_paths'),
             config.get('plot_paths'),
             append_raw_data_image=config.get('append_raw_data_image', False),

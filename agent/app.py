@@ -705,6 +705,18 @@ def _get_primary_admin_api_key():
         return ''
 
 
+def _get_request_or_saved_api_key():
+    """优先使用表单提交的 Key，其次使用当前用户已保存的 Key。"""
+    api_key_encrypted = request.form.get('api_key', '').strip()
+    api_key_nonce = request.form.get('api_key_nonce', '').strip()
+    api_key = None
+    if api_key_encrypted:
+        api_key = decrypt_api_key_if_needed(api_key_encrypted, api_key_nonce)
+    if not api_key:
+        api_key = current_user.get_api_key()
+    return (api_key or '').strip()
+
+
 def _ensure_task_work_dir(config_task_dir, task_id):
     """
     修订/重编译前确保任务工作目录可用。
@@ -1333,6 +1345,110 @@ def get_announcement_history():
         Announcement.id.desc()
     ).all()
     return jsonify([row.to_dict() for row in rows])
+
+
+@app.route('/api/experiment-assistant', methods=['POST'])
+@login_required
+def experiment_assistant():
+    """旁路智能体：基于系统资料和实验数据回答问题，不生成整篇报告。"""
+    api_key = _get_request_or_saved_api_key()
+    if not api_key:
+        return jsonify({'error': '请提供 API Key'}), 400
+
+    question = request.form.get('question', '').strip()
+    if not question:
+        return jsonify({'error': '请输入要咨询的问题'}), 400
+
+    base_url = request.form.get('base_url', 'https://api.moonshot.cn/v1').strip()
+    text_model = request.form.get('text_model', 'kimi-k2.5').strip()
+    if text_model == 'kimi2.5':
+        text_model = 'kimi-k2.5'
+
+    task_id = str(uuid.uuid4())
+    task_dir = UPLOAD_FOLDER / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    system_material_id = request.form.get('system_material_id', '').strip()
+    material = None
+    material_name = ''
+    material_context = ''
+    if system_material_id:
+        material = SystemMaterial.query.get(system_material_id)
+        if not material or not material.is_active:
+            return jsonify({'error': '所选系统资料不存在或已禁用'}), 404
+        material_name = material.experiment_name
+        if _can_reuse_preparsed_contents(material.material_paths or [], material.parsed_contents):
+            parts = []
+            for i, item in enumerate(material.parsed_contents or []):
+                content = (item.get('content') or '').strip()
+                if content:
+                    page = int(item.get('page') or (i + 1))
+                    parts.append(f"=== 资料第{page}页 ===\n{content}")
+            material_context = "\n\n".join(parts)
+        else:
+            material_context = (
+                f"已选择系统实验资料「{material.experiment_name}」，"
+                "但预解析缓存不可用。请基于用户问题和数据给出保守回答。"
+            )
+
+    data_paths = []
+    for f in request.files.getlist('qa_data'):
+        if f.filename:
+            safe = f"qa_data_{len(data_paths)}_{_safe_upload_name(f.filename, 'qa_data')}"
+            safe = _ensure_data_file_extension(safe, f.filename)
+            p = task_dir / safe
+            f.save(p)
+            data_paths.append(str(p))
+
+    data_text = ''
+    data_diag = {'parsed_files': [], 'failed_files': []}
+    if data_paths:
+        from ai_generator import parse_excel_data, format_excel_for_prompt
+        excel_data, data_diag = parse_excel_data(data_paths)
+        data_text = format_excel_for_prompt(excel_data)
+
+    system_prompt = (
+        "你是一个物理实验学习助手。请用中文回答用户关于大学物理实验、实验原理、仪器操作、"
+        "误差分析和数据处理的问题。没有提供资料时，基于通用物理实验知识进行解释；"
+        "提供了实验资料或数据时，优先结合这些上下文回答。回答应清晰、准确、便于学习理解。"
+    )
+    user_prompt = (
+        f"【实验名称】\n{material_name or '未指定'}\n\n"
+        f"【实验资料知识库】\n{material_context or '未提供'}\n\n"
+        f"【用户上传数据】\n{data_text or '未提供'}\n\n"
+        f"【用户问题】\n{question}\n\n"
+        "请用中文回答，结构清晰，避免空泛套话。"
+    )
+
+    extra_body = None
+    if text_model.lower().startswith('kimi'):
+        extra_body = {'thinking': {'type': 'disabled'}}
+
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        resp = client.chat.completions.create(
+            model=text_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.6,
+            max_tokens=4096,
+            extra_body=extra_body,
+        )
+        answer = (resp.choices[0].message.content or '').strip()
+    except Exception as e:
+        return jsonify({'error': f'问答调用失败: {type(e).__name__}: {str(e)[:200]}'}), 500
+
+    return jsonify({
+        'success': True,
+        'answer': answer,
+        'material_name': material_name,
+        'material_pages': len(material.parsed_contents or []) if material else 0,
+        'data_files': [Path(p).name for p in data_paths],
+        'parsed_data_files': data_diag.get('parsed_files', []),
+        'failed_data_files': data_diag.get('failed_files', []),
+    })
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -2816,5 +2932,3 @@ if __name__ == '__main__':
         "Production startup must use gunicorn. "
         "Run: gunicorn -c gunicorn.conf.py app:app"
     )
-
-

@@ -144,8 +144,10 @@ class Harness:
             try:
                 parent=psutil.Process(p.pid);children=parent.children(recursive=True)
                 for child in children: child.terminate()
-                parent.terminate()
-                _,alive=psutil.wait_procs(children+[parent],timeout=3)
+                # multiprocessing must reap its own child; psutil.wait() would steal its exit status.
+                p.terminate();p.join(timeout=3)
+                if p.is_alive():p.kill();p.join(timeout=3)
+                _,alive=psutil.wait_procs(children,timeout=3)
                 for child in alive: child.kill()
             except psutil.NoSuchProcess: pass
             p.join(timeout=3);self.active=None;self.process=None

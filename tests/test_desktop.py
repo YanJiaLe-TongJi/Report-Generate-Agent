@@ -111,3 +111,23 @@ def test_provider_adapter(provider,monkeypatch):
 def test_vision_requires_actual_reading(monkeypatch):
     monkeypatch.setattr(providers,'Client',lambda *a,**kw:SimpleNamespace(create=lambda **k:SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='OK'))])))
     with pytest.raises(ValueError,match='图片识别'):providers.test_connection(PROFILE,vision=True)
+
+def test_stop_terminates_task_process():
+    import multiprocessing as mp
+    import time
+    engine=Harness();p=mp.get_context('spawn').Process(target=time.sleep,args=(60,));p.start()
+    engine.process=p;engine.active='stop-test';engine.tasks['stop-test']={'id':'stop-test','status':'processing','created':0}
+    engine.stop()
+    assert not p.is_alive()
+    assert engine.tasks['stop-test']['status']=='interrupted'
+    assert engine.active is None
+
+def test_pdf_failure_keeps_source_and_log(tmp_path,monkeypatch):
+    import harness,latex_backend
+    monkeypatch.setattr(harness,'EDITION','full')
+    monkeypatch.setattr(latex_backend,'compile_latex',lambda *a:(False,'compiler diagnostic'))
+    task=sample_task(tmp_path);task['id']='failed-pdf';task['config']['format_type']='latex'
+    with pytest.raises(ValueError,match='编译失败'):render(task)
+    assert any(n.endswith('.zip') for n in task['artifacts'])
+    assert any(n.endswith('.log') for n in task['artifacts'])
+    assert any(n.endswith('.md') for n in task['artifacts'])

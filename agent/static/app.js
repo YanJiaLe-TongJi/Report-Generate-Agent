@@ -17,6 +17,14 @@ async function run(fn,el){if(el)el.disabled=true;try{await fn();}catch(e){notice
 const categories={materials:'实验资料',data:'数据表格',raw_data:'原始记录',examples:'参考样例',prompt:'提示词模板'};
 for(const b of document.querySelectorAll('nav button'))b.onclick=()=>{document.querySelectorAll('.page').forEach(p=>p.hidden=p.id!==b.dataset.page);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('active',n===b));};
 function renderLibrary(){
+ $('experiment-groups').replaceChildren();
+ for(const name of [...new Set(state.library.map(i=>i.experiment).filter(Boolean))]){
+  const group=state.library.filter(i=>i.experiment===name),card=node('details'),title=node('summary',name+' · '+group.length+' 个文件');card.append(title);
+  card.append(button('使用本实验资料',async()=>{for(const i of state.library)if(['materials','examples'].includes(i.category))selected.delete(i.id);group.forEach(i=>selected.add(i.id));$('experiment_name').value=name;renderLibrary();document.querySelector('nav button[data-page="generate"]').click();notice('已选用 '+name+'，请继续导入自己的实验数据');}));
+  for(const item of group.filter(i=>i.category==='materials')){const img=document.createElement('img');img.src='/api/library/'+item.id+'/preview';img.alt=item.name;img.loading='lazy';img.className='material-preview';card.append(img);}
+  $('experiment-groups').append(card);
+ }
+
  $('selection').replaceChildren();$('library-list').replaceChildren();
  for(const item of state.library){
   if(item.category!=='prompt'){
@@ -65,3 +73,5 @@ $('stop').onclick=()=>run(async()=>{await api('/api/stop',{});await refresh();no
 $('save-prompt').onclick=()=>run(async()=>{await api('/api/prompts',{name:$('prompt-name').value,content:$('prompt-content').value});await refresh();notice('模板已保存');});
 $('prompt-choice').onchange=()=>{$('prompt').value=state.library.find(i=>i.id===$('prompt-choice').value)?.content||state.default_prompt;};
 run(()=>refresh(true));setInterval(async()=>{if(polling)return;polling=true;try{await refresh();}catch(e){notice(e.message);}finally{polling=false;}},2000);
+
+$('import-pack').onclick=()=>run(async()=>{if(!$('material-pack').files.length)throw Error('请选择 ZIP 资料包');const fd=new FormData();fd.append('pack',$('material-pack').files[0]);const result=await api('/api/library/import-pack',fd);$('material-pack').value='';await refresh();notice('已导入 '+result.items.length+' 个文件（重复文件自动跳过），请展开实验并点击使用');},$('import-pack'));

@@ -73,3 +73,17 @@ GitHub Actions 工作流 `Desktop test installers` 覆盖三个系统架构与�
 - `agent/static/`、`agent/templates/`：基础前端和内置报告模板。
 
 保留原仓库 MIT 许可证和 Git 历史。桌面版移除了账号、管理员、邮件、公告、反馈、独立问答和服务器部署系统。
+
+## 导入配套实验资料库
+
+在「资料与模板」选择配套的 `实验资料库.zip`，点击「导入资料库」。展开实验可预览原图，点击「使用本实验资料」会选中该实验的全部图片与 Word 参考样例，并填写实验名称。再导入你自己的数据即可生成。资料复制到应用数据目录，导入后不再依赖 ZIP 或服务器；重复导入相同实验的相同文件自动跳过。
+
+也支持自行把图片按实验名称分文件夹压缩为 ZIP（PNG/JPG/DOCX，总解压大小不超过 200MB）。资料包跨 Windows/macOS、轻量版/完整版通用。图片识别仍使用你配置的视觉模型。
+
+维护者可在旧 Web 服务器执行以下命令导出配套资料。脚本只读 SQLite 数据库的 `system_materials` 表，导出启用实验的图片和参考样例，不导出用户、密钥或用户报告：
+
+```bash
+python3 tools/export_material_library.py --database agent/instance/app.db --uploads agent/uploads --output 实验资料库.zip
+```
+
+配套资料包独立于安装程序分发，可更新资料而无需重新安装 App。旧版 App 没有 ZIP 导入入口，需要安装支持资料库的新版本。

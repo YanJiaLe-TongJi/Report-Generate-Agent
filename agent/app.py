@@ -3,13 +3,14 @@ import secrets
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify, render_template, make_response, abort
+from flask import Flask, request, jsonify, render_template, make_response, abort, send_file
 from paths import DATA_DIR, RESOURCE_DIR, EDITION
 from storage import read_json, write_json
 from providers import PRESETS, validate, save_secret, secret, test_connection
 from prompts import DEFAULT_SYSTEM_PROMPT
 from constants import COVER_FIELDS
 from harness import Harness
+from material_library import import_pack
 
 EXTENSIONS={'materials':{'.png','.jpg','.jpeg'},'raw_data':{'.png','.jpg','.jpeg'},'data':{'.xlsx','.xls','.csv'},'examples':{'.docx'}}
 
@@ -68,6 +69,16 @@ def create_app(token=None, harness=None):
         data=request.get_json();profile=validate(data['profile'])
         test_connection(profile,vision=data.get('vision',False),api_key=data['profile'].get('api_key') or None)
         return jsonify(ok=True)
+    @app.post('/api/library/import-pack')
+    def import_material_pack():
+        upload=request.files.get('pack')
+        if not upload:raise ValueError('请先选择 ZIP 资料包')
+        return jsonify(items=import_pack(upload.stream,DATA_DIR))
+    @app.get('/api/library/<identifier>/preview')
+    def preview_material(identifier):
+        item=next((i for i in library() if i['id']==identifier),None)
+        if not item or item['category'] not in ('materials','raw_data'):abort(404)
+        return send_file(item['path'])
     @app.post('/api/library')
     def import_files():
         category=request.form.get('category')

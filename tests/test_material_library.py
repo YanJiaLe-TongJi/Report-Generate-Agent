@@ -27,7 +27,7 @@ def test_invalid_pack_atomic(tmp_path):
     assert not (tmp_path/'library.json').exists()
     assert not list((tmp_path/'library').glob('*'))
 
-@pytest.mark.parametrize('path',['../outside.png','/root.png','a\\b.png'])
+@pytest.mark.parametrize('path',['../outside.png','/root.png','..\\outside.png'])
 def test_unsafe_paths(tmp_path,path):
     with pytest.raises(ValueError):import_pack(pack({path:picture()}),tmp_path)
 

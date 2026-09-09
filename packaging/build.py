@@ -18,7 +18,7 @@ def main():
         stage=Path(tmp)/'agent';shutil.copytree(ROOT/'agent',stage,ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copy2(ROOT/'LICENSE',stage/'static/LICENSE.txt')
         (stage/'build_info.py').write_text('EDITION = '+repr(args.edition)+'\n')
-        command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name',name,'--distpath',str(dist),'--workpath',str(Path(tmp)/'build'),'--specpath',tmp,'--paths',str(stage),'--add-data',str(stage/'templates')+os.pathsep+'templates','--add-data',str(stage/'static')+os.pathsep+'static','--hidden-import','build_info','--collect-all','keyring','--collect-all','latex2mathml','--collect-all','webview','--exclude-module','PyQt5','--exclude-module','PyQt6','--exclude-module','PySide2','--exclude-module','PySide6',str(stage/'desktop.py')]
+        command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--windowed','--onedir','--name',name,'--distpath',str(dist),'--workpath',str(Path(tmp)/'build'),'--specpath',tmp,'--paths',str(stage),'--add-data',str(stage/'templates')+os.pathsep+'templates','--add-data',str(stage/'static')+os.pathsep+'static','--hidden-import','build_info','--collect-all','docx','--collect-all','keyring','--collect-all','latex2mathml','--collect-all','webview','--exclude-module','PyQt5','--exclude-module','PyQt6','--exclude-module','PySide2','--exclude-module','PySide6',str(stage/'desktop.py')]
         subprocess.run(command,check=True)
     runtime=Path(args.tex_runtime).resolve() if args.tex_runtime else None
     if sys.platform=='darwin':

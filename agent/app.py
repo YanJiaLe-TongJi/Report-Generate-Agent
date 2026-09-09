@@ -38,7 +38,8 @@ def create_app(token=None, harness=None):
     def headers(response):
         response.headers['Cache-Control']='no-store'
         response.headers['X-Content-Type-Options']='nosniff'
-        response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+        # pywebview builds native API wrappers with new Function; inline scripts stay blocked.
+        response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         return response
     @app.errorhandler(ValueError)
     def invalid(exc):return jsonify(error=str(exc)),400

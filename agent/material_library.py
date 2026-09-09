@@ -13,7 +13,7 @@ from storage import read_json, write_json
 LIMIT = 200 * 1024 * 1024
 
 def import_pack(stream, root):
-    root = Path(root)
+    root = Path(root).resolve()
     try:
         archive = zipfile.ZipFile(stream)
     except zipfile.BadZipFile as exc:

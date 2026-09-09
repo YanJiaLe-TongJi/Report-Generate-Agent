@@ -78,7 +78,7 @@ def create_app(token=None, harness=None):
     def preview_material(identifier):
         item=next((i for i in library() if i['id']==identifier),None)
         if not item or item['category'] not in ('materials','raw_data'):abort(404)
-        return send_file(item['path'])
+        return send_file(Path(item['path']).resolve())
     @app.post('/api/library')
     def import_files():
         category=request.form.get('category')

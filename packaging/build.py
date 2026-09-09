@@ -25,6 +25,8 @@ def main():
         app=dist/(name+'.app')
         if runtime:
             shutil.copytree(runtime,app/'Contents/Resources/texlive',symlinks=True)
+            for link in (app/'Contents/Resources/texlive').rglob('*'):
+                if link.is_symlink() and not link.exists():link.unlink()
             # The frozen Python module lives under Frameworks.
             (app/'Contents/Frameworks/texlive').symlink_to('../Resources/texlive')
         subprocess.run([str(app/'Contents/MacOS'/name),'--self-test'],check=True,env={**os.environ,'REPORT_APP_DATA':str(ROOT/'work'/('smoke-'+args.edition))})

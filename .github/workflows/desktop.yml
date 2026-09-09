@@ -1,6 +1,12 @@
 name: Desktop test installers
 on:
   workflow_dispatch:
+    inputs:
+      edition:
+        description: Edition to build
+        type: choice
+        options: [both, word, full]
+        default: both
   push:
     branches: [desktop-app]
 jobs:
@@ -9,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-15, macos-15-intel]
-        edition: [word, full]
+        edition: ${{ fromJSON(inputs.edition == 'full' && '["full"]' || inputs.edition == 'word' && '["word"]' || '["word","full"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

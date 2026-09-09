@@ -227,3 +227,13 @@ temp/
 
 # Local tutorial videos / media assets
 agent/templates/*.mp4
+
+# Desktop builds and local state
+.venv/
+__pycache__/
+.pytest_cache/
+work/
+dist/
+build/
+*.spec
+agent/build_info.py

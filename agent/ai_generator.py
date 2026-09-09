@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI 生成模块 - 处理与 Kimi API 的交互
+AI 生成模块 - 处理与模型适配层的交互
 """
 
 import re
@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
+from providers import make_client
 from openpyxl import Workbook, load_workbook
 from docx import Document
 from pathlib import Path
@@ -18,12 +18,14 @@ from pathlib import Path
 from constants import KNOWN_SECTIONS
 from plot_utils import generate_data_plots
 
-# 路径定义
-BASE_DIR = Path(__file__).parent
-UPLOAD_FOLDER = BASE_DIR / 'uploads'
-OUTPUT_FOLDER = BASE_DIR / 'outputs'
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-OUTPUT_FOLDER.mkdir(exist_ok=True)
+from paths import RESOURCE_DIR, DATA_DIR
+BASE_DIR = RESOURCE_DIR
+TEMPLATE_DIR = RESOURCE_DIR / "templates"
+UPLOAD_FOLDER = DATA_DIR / "uploads"
+OUTPUT_FOLDER = DATA_DIR / "outputs"
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+
 
 
 def _update(task_id, step, tasks_dict):
@@ -383,8 +385,8 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
         _update(task_id, '检测到仅上传原始数据记录单：本次先不生成报告', tasks_dict)
         _update(task_id, '正在初始化数据提取模型...', tasks_dict)
 
-        api_key = config['api_key']
-        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        client = make_client(config['text_profile'])
+        vision_client = make_client(config['vision_profile']) if config.get('vision_profile') else None
         raw_data_paths = config.get('raw_data_paths') or []
         if isinstance(raw_data_paths, str):
             raw_data_paths = [raw_data_paths]
@@ -395,7 +397,7 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
         total = len(raw_data_paths)
         for i, path in enumerate(raw_data_paths):
             _update(task_id, f'正在提取原始数据记录单 ({i + 1}/{total})...', tasks_dict)
-            content = extract_raw_data_from_image(path, client, config['vision_model'])
+            content = extract_raw_data_from_image(path, vision_client, config['vision_model'])
             extracted_items.append({
                 'page': i + 1,
                 'path': path,
@@ -437,7 +439,7 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
         if task_id in tasks_dict:
             tasks_dict[task_id]['status'] = 'error'
             tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
-        traceback.print_exc()
+        pass  # Provider errors are sanitized before reaching this layer.
         return False
 
 
@@ -588,11 +590,6 @@ def _generate_section(client, model, system_prompt, section_name,
             "若必须给出数值结论，请明确指出缺失字段。"
         )
     
-    extra_body = None
-    model_name = str(model or '').lower()
-    if model_name.startswith('kimi'):
-        # 通过 extra_body 透传厂商扩展参数，避免 SDK 关键字参数报错
-        extra_body = {'thinking': {'type': 'disabled'}}
     section_max_tokens = 8192 if section_name == '数据记录处理' else 4096
     
     resp = client.chat.completions.create(
@@ -603,7 +600,6 @@ def _generate_section(client, model, system_prompt, section_name,
         ],
         temperature=0.6,
         max_tokens=section_max_tokens,
-        extra_body=extra_body,
     )
     raw = resp.choices[0].message.content
     return (raw or '').strip()
@@ -1036,8 +1032,8 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
     try:
         _update(task_id, '正在初始化 API...', tasks_dict)
 
-        api_key = config['api_key']
-        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        client = make_client(config['text_profile'])
+        vision_client = make_client(config['vision_profile']) if config.get('vision_profile') else None
 
         # Phase 0: 资料识别
         image_contents = []
@@ -1056,7 +1052,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             total = len(config['material_paths'])
             for i, path in enumerate(config['material_paths']):
                 _update(task_id, f'正在识别资料图片 ({i + 1}/{total})...', tasks_dict)
-                content = extract_single_image(path, client, config['vision_model'])
+                content = extract_single_image(path, vision_client, config['vision_model'])
                 image_contents.append({'page': i + 1, 'path': path, 'content': content})
                 if i < total - 1:
                     time.sleep(0.5)
@@ -1116,6 +1112,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
                 if parse_diag.get('failed_files'):
                     first = parse_diag['failed_files'][0]
                     _update(task_id, f"⚠ 示例失败原因：{first.get('file')} -> {first.get('reason', '未知错误')[:120]}", tasks_dict)
+                raise ValueError('数据文件未解析到有效数据，请检查后重试')
             elif data_paths:
                 _update(task_id, f'✓ 已解析 {len(excel_data)} 个数据文件', tasks_dict)
             _update(task_id, '正在使用 matplotlib 生成候选数据图...', tasks_dict)
@@ -1148,7 +1145,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         if use_raw_data_ocr and not data_text and raw_data_path:
             _update(task_id, '正在从原始数据记录单提取数据...', tasks_dict)
             try:
-                raw_data_content = extract_raw_data_from_image(raw_data_path, client, config['vision_model'])
+                raw_data_content = extract_raw_data_from_image(raw_data_path, vision_client, config['vision_model'])
                 data_text = raw_data_content
                 _update(task_id, '✓ 已从原始数据记录单提取数据', tasks_dict)
             except Exception as e:
@@ -1202,7 +1199,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             content, err = phase1_results.get(sec_name, ('', '未知错误'))
             if err:
                 err_msg = _format_generation_error(err)
-                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                raise ValueError(f'「{sec_name}」生成失败: {err_msg}')
                 section_contents[sec_name] = f'生成失败: {err_msg}'
             else:
                 _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
@@ -1347,7 +1344,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             content, err = phase3_results.get(sec_name, ('', '未知错误'))
             if err:
                 err_msg = _format_generation_error(err)
-                _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
+                raise ValueError(f'「{sec_name}」生成失败: {err_msg}')
                 section_contents[sec_name] = f'生成失败: {err_msg}'
             else:
                 _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
@@ -1364,5 +1361,5 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         if task_id in tasks_dict:
             tasks_dict[task_id]['status'] = 'error'
             tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
-        traceback.print_exc()
+        pass  # Provider errors are sanitized before reaching this layer.
         return None

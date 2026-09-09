@@ -1,0 +1,35 @@
+name: Desktop test installers
+on:
+  workflow_dispatch:
+  push:
+    branches: [desktop-app]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+        edition: [word, full]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r agent/requirements.txt pyinstaller pytest
+      - run: python -m pytest -q
+      - if: runner.os == 'Windows'
+        run: choco install strawberryperl innosetup -y --no-progress
+      - if: matrix.edition == 'full'
+        run: python packaging/prepare_tex.py --destination work/texlive
+      - if: matrix.edition == 'full'
+        run: python packaging/build.py --edition full --tex-runtime work/texlive
+      - if: matrix.edition == 'word'
+        run: python packaging/build.py --edition word
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhysicsReport-${{ matrix.os }}-${{ matrix.edition }}
+          path: |
+            dist/**/*.dmg
+            dist/**/*unsigned.exe
+            dist/**/*.sha256

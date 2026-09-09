@@ -11,11 +11,14 @@ from pathlib import Path
 from ai_generator import run_ai_generation
 from constants import KNOWN_SECTIONS
 
-# 路径定义
-BASE_DIR = Path(__file__).parent
-TEMPLATE_DIR = BASE_DIR / 'templates'
-OUTPUT_FOLDER = BASE_DIR / 'outputs'
-OUTPUT_FOLDER.mkdir(exist_ok=True)
+from paths import RESOURCE_DIR, DATA_DIR
+BASE_DIR = RESOURCE_DIR
+TEMPLATE_DIR = RESOURCE_DIR / "templates"
+UPLOAD_FOLDER = DATA_DIR / "uploads"
+OUTPUT_FOLDER = DATA_DIR / "outputs"
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+
 
 
 def escape_latex(text):
@@ -32,22 +35,9 @@ def escape_latex(text):
 
 
 def find_xelatex():
-    """优先使用 PATH 中的 xelatex；否则在 TEXLIVE_ROOT（默认 D:\texlive）下查找。"""
-    exe = shutil.which('xelatex')
-    if exe:
-        return exe
-    root = os.environ.get('TEXLIVE_ROOT', r'D:\texlive')
-    root_path = Path(root)
-    if not root_path.exists():
-        return None
-    bin_dirs = list(root_path.glob('*/bin/windows'))
-    if not bin_dirs:
-        bin_dirs = [root_path / 'bin' / 'windows'] if (root_path / 'bin' / 'windows').exists() else []
-    for b in sorted(bin_dirs, reverse=True):
-        exe_path = b / 'xelatex.exe'
-        if exe_path.exists():
-            return str(exe_path)
-    return None
+    runtime = RESOURCE_DIR / 'texlive'
+    candidates = list(runtime.glob('bin/*/xelatex')) + list(runtime.glob('bin/*/xelatex.exe'))
+    return str(candidates[0]) if candidates else None
 
 
 def build_latex_document(cover_info, section_contents, task_dir, raw_data_paths=None, material_paths=None, plot_paths=None, append_raw_data_image=False):
@@ -132,7 +122,7 @@ def build_latex_document(cover_info, section_contents, task_dir, raw_data_paths=
                         '\\noindent\\begin{center}\n'
                         f'\\includegraphics[width=0.9\\textwidth,height=0.78\\textheight,keepaspectratio]{{{dest_name}}}\n'
                         '\\\\[0.5em]\n'
-                        f'{{\\small 原始数据记录单 {dest_name}}}\n'
+                        f'{{\\small 原始数据记录单 {escape_latex(dest_name)}}}\n'
                         '\\end{center}\n\\vspace{1em}\n'
                     )
 
@@ -167,12 +157,13 @@ def compile_latex(tex_path, output_pdf_path):
     build_dir = str(Path(tex_path).parent)
     xelatex = find_xelatex()
     if not xelatex:
-        return False, '未找到 xelatex。请将 TeX Live 加入 PATH'
+        return False, '完整版内置 LaTeX 环境缺失，请重新安装完整版'
     
     cmd = [
         xelatex,
         '-interaction=nonstopmode',
         '-halt-on-error',
+        '-no-shell-escape',
         f'-output-directory={build_dir}',
         tex_path,
     ]
@@ -183,6 +174,8 @@ def compile_latex(tex_path, output_pdf_path):
             result = subprocess.run(
                 cmd, capture_output=True, text=True,
                 timeout=120, cwd=build_dir,
+                env={**os.environ, 'openin_any':'p', 'openout_any':'p', 'TEXMFVAR':str(DATA_DIR/'tex-cache'), 'TEXMFCONFIG':str(DATA_DIR/'tex-config')},
+                encoding='utf-8', errors='replace',
             )
             full_log += f'\n=== Pass {pass_num + 1} ===\n'
             stdout = result.stdout or ''
@@ -201,71 +194,3 @@ def compile_latex(tex_path, output_pdf_path):
         shutil.copy2(pdf_path, output_pdf_path)
         return True, full_log
     return False, full_log + '\n编译完成但未找到 PDF'
-
-
-def run_latex_generation(task_id, config, tasks_dict):
-    """
-    运行 LaTeX 完整生成流程
-    tasks_dict: 从主 app 传入的任务状态字典
-    """
-    def _update(task_id, step):
-        if task_id in tasks_dict:
-            tasks_dict[task_id]['steps'].append(step)
-            tasks_dict[task_id]['current_step'] = step
-    
-    # 运行 AI 生成
-    section_contents = run_ai_generation(task_id, config, tasks_dict, format_type='latex')
-    
-    if not section_contents:
-        return False
-    
-    # 构建 LaTeX 文档
-    _update(task_id, '正在构建 LaTeX 文档...')
-    tex_path = build_latex_document(
-        config['cover_info'], section_contents, config['task_dir'],
-        config.get('raw_data_paths'),
-        config.get('material_paths'),
-        config.get('plot_paths'),
-        config.get('append_raw_data_image', False)
-    )
-    
-    # 编译 PDF
-    _update(task_id, '正在编译 PDF...')
-    out_name = f'实验报告_{task_id[:8]}.pdf'
-    out_path = str(OUTPUT_FOLDER / out_name)
-    success, compile_log = compile_latex(tex_path, out_path)
-    
-    if not success:
-        _update(task_id, '编译失败，保存源码...')
-        tex_fallback_name = f'实验报告_{task_id[:8]}.tex'
-        shutil.copy2(tex_path, OUTPUT_FOLDER / tex_fallback_name)
-
-        log_tail = (compile_log or '')[-1200:]
-        tasks_dict[task_id]['status'] = 'error'
-        tasks_dict[task_id]['error'] = (
-            'LaTeX 编译失败，已保存 .tex 源文件供手动编译。'
-            + (f'\n\n编译日志（末尾）:\n{log_tail}' if log_tail else '')
-        )
-        tasks_dict[task_id]['download_url'] = f'/api/download/{tex_fallback_name}'
-        return False
-    
-    # 保存原始内容
-    raw_name = f'报告原文_{task_id[:8]}.md'
-    raw_path = OUTPUT_FOLDER / raw_name
-    raw_parts = []
-    for sn in KNOWN_SECTIONS:
-        raw_parts.append(f'## {sn}\n\n{section_contents.get(sn, "(空)")}\n')
-    raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
-    
-    # 保存源码
-    tex_save_name = f'报告源码_{task_id[:8]}.tex'
-    shutil.copy2(tex_path, OUTPUT_FOLDER / tex_save_name)
-    
-    tasks_dict[task_id]['status'] = 'done'
-    tasks_dict[task_id]['download_url'] = f'/api/download/{out_name}'
-    tasks_dict[task_id]['raw_url'] = f'/api/download/{raw_name}'
-    tasks_dict[task_id]['tex_url'] = f'/api/download/{tex_save_name}'
-    tasks_dict[task_id]['section_contents'] = section_contents
-    _update(task_id, '报告生成完成！')
-    
-    return True

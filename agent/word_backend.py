@@ -17,11 +17,13 @@ from latex2mathml.converter import convert as latex_to_mathml
 
 from constants import KNOWN_SECTIONS
 
-# 路径定义
-BASE_DIR = Path(__file__).parent
-TEMPLATE_DIR = BASE_DIR / 'templates'
-OUTPUT_FOLDER = BASE_DIR / 'outputs'
-OUTPUT_FOLDER.mkdir(exist_ok=True)
+from paths import RESOURCE_DIR, DATA_DIR
+BASE_DIR = RESOURCE_DIR
+TEMPLATE_DIR = RESOURCE_DIR / "templates"
+UPLOAD_FOLDER = DATA_DIR / "uploads"
+OUTPUT_FOLDER = DATA_DIR / "outputs"
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # OMML 命名空间
 NSMAP = {
@@ -235,6 +237,8 @@ def add_formatted_paragraph_with_formula(doc, text):
     
     # 设置段落格式
     para.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+    para.paragraph_format.space_before = Pt(0)
+    para.paragraph_format.space_after = Pt(6)
     para.paragraph_format.line_spacing = 1.5
     para.paragraph_format.first_line_indent = Inches(0.5)
     
@@ -247,6 +251,9 @@ def add_section_heading(doc, title_text):
     heading.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
     run = heading.add_run(title_text)
     set_chinese_font(run, '黑体', 14, bold=True)
+    heading.paragraph_format.keep_with_next = True
+    heading.paragraph_format.space_before = Pt(12)
+    heading.paragraph_format.space_after = Pt(6)
     heading.paragraph_format.line_spacing = 1.5
     heading.paragraph_format.first_line_indent = Inches(0)
     return heading
@@ -472,7 +479,8 @@ def add_word_table(doc, table_lines):
     table.autofit = False
 
     # 按内容长度分配列宽，减少“逐字换行”问题
-    page_width_inch = 6.5
+    section = doc.sections[-1]
+    page_width_inch = (section.page_width - section.left_margin - section.right_margin) / 914400
     min_col_width = 0.55
     weights = []
     for col_idx in range(num_cols):
@@ -1103,66 +1111,14 @@ def build_word_document_from_template(
     if progress_cb:
         progress_cb('正在写入 Word 文件到磁盘...')
     word_path = Path(task_dir) / 'report.docx'
+    # Remove stale template sample headers and fixed page counts, retaining drawings.
+    for section in doc.sections:
+        for header in (section.header, section.first_page_header, section.even_page_header):
+            for text in header._element.iter(qn('w:t')):
+                if (text.text or '').strip() not in ('装', '订', '线'):
+                    text.text = ''
+        for footer in (section.footer, section.first_page_footer, section.even_page_footer):
+            for paragraph in footer.paragraphs:
+                paragraph.clear()
     doc.save(str(word_path))
     return str(word_path)
-
-
-def run_word_generation(task_id, config, tasks_dict):
-    """
-    运行 Word 完整生成流程
-    tasks_dict: 从主 app 传入的任务状态字典
-    """
-    def _update(task_id, step):
-        if task_id in tasks_dict:
-            tasks_dict[task_id]['steps'].append(step)
-            tasks_dict[task_id]['current_step'] = step
-    
-    try:
-        # 运行 AI 生成
-        from ai_generator import run_ai_generation
-        section_contents = run_ai_generation(task_id, config, tasks_dict, format_type='word')
-
-        if not section_contents:
-            if task_id in tasks_dict and tasks_dict[task_id].get('status') != 'error':
-                tasks_dict[task_id]['status'] = 'error'
-                tasks_dict[task_id]['error'] = 'AI 未返回可用内容，Word 生成已中止'
-            return False
-
-        # 构建 Word 文档
-        _update(task_id, '正在构建 Word 文档...')
-        word_path = build_word_document_from_template(
-            config['cover_info'], section_contents, config['task_dir'],
-            config.get('raw_data_paths'),
-            config.get('material_paths'),
-            config.get('plot_paths'),
-            append_raw_data_image=config.get('append_raw_data_image', False),
-            progress_cb=lambda s: _update(task_id, s),
-        )
-
-        # 复制到输出目录
-        _update(task_id, '正在保存文档...')
-        out_name = f'实验报告_{task_id[:8]}.docx'
-        out_path = OUTPUT_FOLDER / out_name
-        shutil.copy2(word_path, out_path)
-
-        # 保存原始文本
-        raw_name = f'报告原文_{task_id[:8]}.md'
-        raw_path = OUTPUT_FOLDER / raw_name
-        raw_parts = []
-        for sn in KNOWN_SECTIONS:
-            raw_parts.append(f'## {sn}\n\n{section_contents.get(sn, "(空)")}\n')
-        raw_path.write_text('\n'.join(raw_parts), encoding='utf-8')
-
-        tasks_dict[task_id]['status'] = 'done'
-        tasks_dict[task_id]['download_url'] = f'/api/download/{out_name}'
-        tasks_dict[task_id]['raw_url'] = f'/api/download/{raw_name}'
-        tasks_dict[task_id]['section_contents'] = section_contents
-        _update(task_id, 'Word 报告生成完成！')
-        return True
-    except Exception as e:
-        traceback.print_exc()
-        if task_id in tasks_dict:
-            tasks_dict[task_id]['status'] = 'error'
-            tasks_dict[task_id]['error'] = f'Word 文档生成失败: {type(e).__name__}: {str(e)}'
-            _update(task_id, 'Word 报告生成失败')
-        return False

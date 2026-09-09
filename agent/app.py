@@ -10,7 +10,7 @@ from providers import PRESETS, validate, save_secret, secret, test_connection
 from prompts import DEFAULT_SYSTEM_PROMPT
 from constants import COVER_FIELDS
 from harness import Harness
-from material_library import import_pack
+from material_library import import_pack, normalize_groups, list_groups, upload_group
 
 EXTENSIONS={'materials':{'.png','.jpg','.jpeg'},'raw_data':{'.png','.jpg','.jpeg'},'data':{'.xlsx','.xls','.csv'},'examples':{'.docx'}}
 
@@ -18,7 +18,7 @@ def create_app(token=None, harness=None):
     app=Flask(__name__); app.config['MAX_CONTENT_LENGTH']=200*1024*1024
     token=token or secrets.token_urlsafe(32)
     engine=harness or Harness();app.engine=engine;app.access_token=token
-    def library():return read_json(DATA_DIR/'library.json',[])
+    def library():return normalize_groups(read_json(DATA_DIR/'library.json',[]))
     def settings():return read_json(DATA_DIR/'settings.json',{})
     def artifact(tid,name):
         t=engine.tasks.get(tid)
@@ -52,7 +52,7 @@ def create_app(token=None, harness=None):
         response.set_cookie('desktop_access',token,httponly=True,samesite='Strict')
         return response
     @app.get('/api/state')
-    def state():return jsonify(edition=EDITION,settings=settings(),presets=PRESETS,library=library(),tasks=engine.list(),default_prompt=DEFAULT_SYSTEM_PROMPT)
+    def state():return jsonify(edition=EDITION,settings=settings(),presets=PRESETS,library=library(),groups=list_groups(library()),tasks=engine.list(),default_prompt=DEFAULT_SYSTEM_PROMPT)
     @app.post('/api/settings')
     def save_settings():
         data=request.get_json();result={}
@@ -79,10 +79,19 @@ def create_app(token=None, harness=None):
         item=next((i for i in library() if i['id']==identifier),None)
         if not item or item['category'] not in ('materials','raw_data'):abort(404)
         return send_file(Path(item['path']).resolve())
+    @app.post('/api/library/groups')
+    def create_material_group():
+        identifier,added=upload_group(request.files.getlist('files'),DATA_DIR,request.form.get('name',''),request.form.get('experiment_category',''),request.form.get('group_id',''))
+        return jsonify(group_id=identifier,items=added)
+    @app.delete('/api/library/groups/<identifier>')
+    def remove_material_group(identifier):
+        write_json(DATA_DIR/'library.json',[i for i in library() if i.get('group_id')!=identifier])
+        return jsonify(ok=True)
     @app.post('/api/library')
     def import_files():
         category=request.form.get('category')
         if category not in EXTENSIONS:raise ValueError('未知资料类型')
+        if category=='materials':raise ValueError('请通过上传实验资料组一次导入本实验的全部图片')
         items=library();added=[]
         folder=DATA_DIR/'library';folder.mkdir(exist_ok=True)
         for f in request.files.getlist('files'):
@@ -113,6 +122,15 @@ def create_app(token=None, harness=None):
     @app.post('/api/generate')
     def generate():
         data=request.get_json();selected=set(data.get('selected',[]));items=library()
+        group_id=data.get('material_group_id')
+        selected_groups={i['group_id'] for i in items if i['id'] in selected and i.get('group_id')}
+        if group_id:selected_groups.add(group_id)
+        if len(selected_groups)>1:raise ValueError('一次报告只能选择一个实验资料组')
+        if selected_groups:
+            group_id=next(iter(selected_groups))
+            group_items=[i for i in items if i.get('group_id')==group_id]
+            if not group_items:raise ValueError('选中的实验资料组已移除，请重新选择')
+            selected.update(i['id'] for i in group_items)
         config={category+'_paths':[i['path'] for i in items if i['id'] in selected and i['category']==category] for category in EXTENSIONS}
         config['material_paths']=config.pop('materials_paths');config['example_paths']=config.pop('examples_paths')
         config.update(cover_info={k:str(data.get('cover_info',{}).get(k,'')) for k in COVER_FIELDS},system_prompt=data.get('system_prompt') or DEFAULT_SYSTEM_PROMPT,format_type=data.get('format_type','word'),framework_mode=bool(data.get('framework_mode')))

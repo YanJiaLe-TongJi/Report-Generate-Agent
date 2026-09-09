@@ -1,7 +1,7 @@
 'use strict';
 history.replaceState({},'', '/');
 const $=id=>document.getElementById(id);
-let state,selected=new Set(),polling=false;
+let state,selected=new Set(),polling=false,selectedGroup="";
 function notice(message){$('notice').textContent=message;}
 async function api(path,body,method='POST'){
  const options={method,headers:{'X-Desktop-Request':'1'}};
@@ -16,25 +16,61 @@ function button(text,action){const el=node('button',text);el.onclick=()=>run(act
 async function run(fn,el){if(el)el.disabled=true;try{await fn();}catch(e){notice(e.message);}finally{if(el)el.disabled=false;}}
 const categories={materials:'实验资料',data:'数据表格',raw_data:'原始记录',examples:'参考样例',prompt:'提示词模板'};
 for(const b of document.querySelectorAll('nav button'))b.onclick=()=>{document.querySelectorAll('.page').forEach(p=>p.hidden=p.id!==b.dataset.page);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('active',n===b));};
+function selectGroup(identifier){
+ selectedGroup=identifier;
+ const group=state.groups.find(g=>g.id===identifier);
+ if(group){$('experiment-category').value=group.category;$('experiment_name').value=group.name;}
+ renderGroupSelector();
+}
+function renderGroupSelector(){
+ const category=$('experiment-category'),previous=category.value;
+ category.replaceChildren(new Option('请选择实验大类',''));
+ const names=[...new Set(state.groups.map(g=>g.category))];
+ for(const name of names)category.add(new Option(name,name));
+ category.value=names.includes(previous)?previous:'';
+ const chosen=state.groups.find(g=>g.id===selectedGroup);
+ if(chosen)category.value=chosen.category;
+ const select=$('experiment-group');select.replaceChildren(new Option('不使用资料组 / 请选择具体实验',''));
+ for(const group of state.groups.filter(g=>g.category===category.value))select.add(new Option(group.name,group.id));
+ select.value=chosen?.id||'';
+ const info=$('group-info');info.replaceChildren();
+ if(!chosen){info.append(node('p','请选择实验资料组，或在下方上传自己的资料。'));return;}
+ const files=state.library.filter(i=>i.group_id===chosen.id);
+ info.append(node('h3',chosen.name),node('p',chosen.category+' · '+files.filter(i=>i.category==='materials').length+' 张图片 · '+files.filter(i=>i.category==='examples').length+' 个样例'),node('p','已选用整组资料，无需逐张勾选。'));
+ const preview=node('details');preview.append(node('summary','查看整组资料'));
+ preview.ontoggle=()=>{if(!preview.open||preview.dataset.loaded)return;preview.dataset.loaded='1';for(const item of files){preview.append(node('p',item.name));if(item.category==='materials'){const img=document.createElement('img');img.src='/api/library/'+item.id+'/preview';img.alt=item.name;img.loading='lazy';img.className='material-preview';preview.append(img);}}};info.append(preview);
+}
 function renderLibrary(){
+ if(!state.groups.some(g=>g.id===selectedGroup))selectedGroup='';
+ renderGroupSelector();
+ const target=$('upload-group-target'),oldTarget=target.value;target.replaceChildren(new Option('新建资料组',''));
+ for(const group of state.groups)target.add(new Option(group.category+' / '+group.name,group.id));
+ target.value=state.groups.some(g=>g.id===oldTarget)?oldTarget:'';$('new-group-fields').hidden=!!target.value;
+ $('category-suggestions').replaceChildren();for(const name of [...new Set(['大物上','大物下',...state.groups.map(g=>g.category)])])$('category-suggestions').append(new Option(name,name));
  $('experiment-groups').replaceChildren();
- for(const name of [...new Set(state.library.map(i=>i.experiment).filter(Boolean))]){
-  const group=state.library.filter(i=>i.experiment===name),card=node('details'),title=node('summary',name+' · '+group.length+' 个文件');card.append(title);
-  card.append(button('使用本实验资料',async()=>{for(const i of state.library)if(['materials','examples'].includes(i.category))selected.delete(i.id);group.forEach(i=>selected.add(i.id));$('experiment_name').value=name;renderLibrary();document.querySelector('nav button[data-page="generate"]').click();notice('已选用 '+name+'，请继续导入自己的实验数据');}));
-  for(const item of group.filter(i=>i.category==='materials')){const img=document.createElement('img');img.src='/api/library/'+item.id+'/preview';img.alt=item.name;img.loading='lazy';img.className='material-preview';card.append(img);}
-  $('experiment-groups').append(card);
+ for(const group of state.groups){
+  const row=node('div',undefined,'file-row');row.append(node('span',group.category+' / '+group.name+' · '+group.items.length+' 个文件'),button('选用整组',async()=>{selectGroup(group.id);document.querySelector('nav button[data-page="generate"]').click();}),button('移出资料组',async()=>{await api('/api/library/groups/'+group.id,undefined,'DELETE');await refresh();}));$('experiment-groups').append(row);
  }
-
  $('selection').replaceChildren();$('library-list').replaceChildren();
- for(const item of state.library){
+ const individual=state.library.filter(i=>!i.group_id);
+ for(const item of individual){
   if(item.category!=='prompt'){
    const row=node('div',undefined,'file-row'),label=node('label'),check=document.createElement('input');check.type='checkbox';check.checked=selected.has(item.id);check.onchange=()=>check.checked?selected.add(item.id):selected.delete(item.id);label.append(check,document.createTextNode(item.name));row.append(label,node('span',categories[item.category],'muted'));$('selection').append(row);
   }
   const row=node('div',undefined,'file-row');row.append(node('span',item.name),node('small',categories[item.category]),button('移出列表',async()=>{await api('/api/library/'+item.id,undefined,'DELETE');selected.delete(item.id);await refresh();}));$('library-list').append(row);
  }
- if(!state.library.length){$('selection').append(node('p','尚未导入文件。'));$('library-list').append(node('p','本地资料库为空。'));}
+ if(!individual.length){$('selection').append(node('p','尚未导入自己的数据或补充样例。'));$('library-list').append(node('p','暂无独立数据或提示词模板。'));}
  const choice=$('prompt-choice'),value=choice.value;choice.replaceChildren(new Option('内置提示词',''));for(const p of state.library.filter(i=>i.category==='prompt'))choice.add(new Option(p.name,p.id));choice.value=value;
 }
+$('experiment-category').onchange=()=>{selectedGroup='';renderGroupSelector();};
+$('experiment-group').onchange=()=>selectGroup($('experiment-group').value);
+$('upload-group-target').onchange=()=>{$('new-group-fields').hidden=!!$('upload-group-target').value;};
+$('upload-group').onclick=()=>run(async()=>{
+ if(!$('group-files').files.length)throw Error('请选择本实验的资料图片或 Word 样例');
+ const fd=new FormData();fd.append('name',$('upload-group-name').value);fd.append('experiment_category',$('upload-group-category').value);fd.append('group_id',$('upload-group-target').value);
+ for(const file of $('group-files').files)fd.append('files',file);
+ const result=await api('/api/library/groups',fd);$('group-files').value='';await refresh();selectGroup(result.group_id);notice('资料组已保存并整组选用');
+},$('upload-group'));
 function profileForm(role,title){
  const card=node('div',undefined,'card');card.append(node('h2',title));
  const fields=[['provider','服务商','select'],['base_url','Base URL','input'],['model','模型 ID','input'],['api_key','API Key（留空保留已保存密钥）','input']];
@@ -68,10 +104,10 @@ function renderTasks(){
 async function refresh(initial=false){const next=await api('/api/state',undefined,'GET');const libraryChanged=!state||JSON.stringify(state.library)!==JSON.stringify(next.library);state=next;if(libraryChanged)renderLibrary();renderTasks();$('generate-button').disabled=state.tasks.some(t=>t.status==='processing');if(initial){$('edition').textContent=state.edition==='full'?'完整版 · Word + PDF':'Word 轻量版';if(state.edition==='full')$('format').add(new Option('PDF · LaTeX 排版','latex'));$('prompt').value=state.default_prompt;profileForm('text','报告写作');profileForm('vision','图片识别（有图片资料时必填）');if(!state.settings.text)notice('欢迎使用。请先打开模型设置，选择服务商并保存 API Key。');}}
 $('import').onclick=()=>run(async()=>{const fd=new FormData();fd.append('category',$('import-category').value);for(const f of $('files').files)fd.append('files',f);if(!$('files').files.length)throw Error('请先选择文件');const data=await api('/api/library',fd);data.items.forEach(i=>selected.add(i.id));$('files').value='';await refresh();notice('文件已导入并选中');},$('import'));
 $('save-settings').onclick=()=>run(async()=>{await api('/api/settings',{text:readProfile('text'),vision:readProfile('vision')});$('text-api_key').value='';$('vision-api_key').value='';notice('模型设置已保存');},$('save-settings'));
-$('generate-button').onclick=()=>run(async()=>{const cover_info=Object.fromEntries(['experiment_name','student_name','student_id','group_number','experiment_date'].map(k=>[k,$(k).value]));await api('/api/generate',{selected:[...selected],cover_info,format_type:$('format').value,system_prompt:$('prompt').value,framework_mode:$('framework').checked});notice('任务已开始');await refresh();},$('generate-button'));
+$('generate-button').onclick=()=>run(async()=>{const cover_info=Object.fromEntries(['experiment_name','student_name','student_id','group_number','experiment_date'].map(k=>[k,$(k).value]));await api('/api/generate',{selected:[...selected],material_group_id:selectedGroup,cover_info,format_type:$('format').value,system_prompt:$('prompt').value,framework_mode:$('framework').checked});notice('任务已开始');await refresh();},$('generate-button'));
 $('stop').onclick=()=>run(async()=>{await api('/api/stop',{});await refresh();notice('当前任务已停止');});
 $('save-prompt').onclick=()=>run(async()=>{await api('/api/prompts',{name:$('prompt-name').value,content:$('prompt-content').value});await refresh();notice('模板已保存');});
 $('prompt-choice').onchange=()=>{$('prompt').value=state.library.find(i=>i.id===$('prompt-choice').value)?.content||state.default_prompt;};
 run(()=>refresh(true));setInterval(async()=>{if(polling)return;polling=true;try{await refresh();}catch(e){notice(e.message);}finally{polling=false;}},2000);
 
-$('import-pack').onclick=()=>run(async()=>{if(!$('material-pack').files.length)throw Error('请选择 ZIP 资料包');const fd=new FormData();fd.append('pack',$('material-pack').files[0]);const result=await api('/api/library/import-pack',fd);$('material-pack').value='';await refresh();notice('已导入 '+result.items.length+' 个文件（重复文件自动跳过），请展开实验并点击使用');},$('import-pack'));
+$('import-pack').onclick=()=>run(async()=>{if(!$('material-pack').files.length)throw Error('请选择 ZIP 资料包');const fd=new FormData();fd.append('pack',$('material-pack').files[0]);const result=await api('/api/library/import-pack',fd);$('material-pack').value='';await refresh();notice('已导入 '+result.items.length+' 个文件（重复文件自动跳过），请在生成页面按大类选择实验');},$('import-pack'));

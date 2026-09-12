@@ -15,7 +15,8 @@ from sqlalchemy import text, inspect, or_
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from openai import OpenAI
+from model_catalog import catalog, default_kimi
+from model_providers import profile, merge_profile, route_profiles, client_for, ProviderClient
 
 from crypto_utils import encrypt_api_key, decrypt_api_key, decrypt_api_key_if_needed
 from word_backend import run_word_generation
@@ -705,18 +706,6 @@ def _get_primary_admin_api_key():
         return ''
 
 
-def _get_request_or_saved_api_key():
-    """优先使用表单提交的 Key，其次使用当前用户已保存的 Key。"""
-    api_key_encrypted = request.form.get('api_key', '').strip()
-    api_key_nonce = request.form.get('api_key_nonce', '').strip()
-    api_key = None
-    if api_key_encrypted:
-        api_key = decrypt_api_key_if_needed(api_key_encrypted, api_key_nonce)
-    if not api_key:
-        api_key = current_user.get_api_key()
-    return (api_key or '').strip()
-
-
 def _ensure_task_work_dir(config_task_dir, task_id):
     """
     修订/重编译前确保任务工作目录可用。
@@ -1020,7 +1009,7 @@ def index():
     return render_template('index.html',
                           system_experiments=system_experiments,
                           system_experiments_data=system_experiments_data,
-                          user_api_key=user_api_key,
+                          user_api_key=None,
                           user_examples=user_examples)
 
 
@@ -1058,7 +1047,7 @@ def update_user_api_key():
     if not api_key:
         return jsonify({'error': 'API Key 不能为空'}), 400
     
-    if not api_key.startswith('sk-'):
+    if len(api_key)>4096 or any(c.isspace() for c in api_key):
         return jsonify({'error': '无效的 API Key 格式'}), 400
     
     current_user.set_api_key(api_key)
@@ -1347,110 +1336,6 @@ def get_announcement_history():
     return jsonify([row.to_dict() for row in rows])
 
 
-@app.route('/api/experiment-assistant', methods=['POST'])
-@login_required
-def experiment_assistant():
-    """旁路智能体：基于系统资料和实验数据回答问题，不生成整篇报告。"""
-    api_key = _get_request_or_saved_api_key()
-    if not api_key:
-        return jsonify({'error': '请提供 API Key'}), 400
-
-    question = request.form.get('question', '').strip()
-    if not question:
-        return jsonify({'error': '请输入要咨询的问题'}), 400
-
-    base_url = request.form.get('base_url', 'https://api.moonshot.cn/v1').strip()
-    text_model = request.form.get('text_model', 'kimi-k2.5').strip()
-    if text_model == 'kimi2.5':
-        text_model = 'kimi-k2.5'
-
-    task_id = str(uuid.uuid4())
-    task_dir = UPLOAD_FOLDER / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-
-    system_material_id = request.form.get('system_material_id', '').strip()
-    material = None
-    material_name = ''
-    material_context = ''
-    if system_material_id:
-        material = SystemMaterial.query.get(system_material_id)
-        if not material or not material.is_active:
-            return jsonify({'error': '所选系统资料不存在或已禁用'}), 404
-        material_name = material.experiment_name
-        if _can_reuse_preparsed_contents(material.material_paths or [], material.parsed_contents):
-            parts = []
-            for i, item in enumerate(material.parsed_contents or []):
-                content = (item.get('content') or '').strip()
-                if content:
-                    page = int(item.get('page') or (i + 1))
-                    parts.append(f"=== 资料第{page}页 ===\n{content}")
-            material_context = "\n\n".join(parts)
-        else:
-            material_context = (
-                f"已选择系统实验资料「{material.experiment_name}」，"
-                "但预解析缓存不可用。请基于用户问题和数据给出保守回答。"
-            )
-
-    data_paths = []
-    for f in request.files.getlist('qa_data'):
-        if f.filename:
-            safe = f"qa_data_{len(data_paths)}_{_safe_upload_name(f.filename, 'qa_data')}"
-            safe = _ensure_data_file_extension(safe, f.filename)
-            p = task_dir / safe
-            f.save(p)
-            data_paths.append(str(p))
-
-    data_text = ''
-    data_diag = {'parsed_files': [], 'failed_files': []}
-    if data_paths:
-        from ai_generator import parse_excel_data, format_excel_for_prompt
-        excel_data, data_diag = parse_excel_data(data_paths)
-        data_text = format_excel_for_prompt(excel_data)
-
-    system_prompt = (
-        "你是一个物理实验学习助手。请用中文回答用户关于大学物理实验、实验原理、仪器操作、"
-        "误差分析和数据处理的问题。没有提供资料时，基于通用物理实验知识进行解释；"
-        "提供了实验资料或数据时，优先结合这些上下文回答。回答应清晰、准确、便于学习理解。"
-    )
-    user_prompt = (
-        f"【实验名称】\n{material_name or '未指定'}\n\n"
-        f"【实验资料知识库】\n{material_context or '未提供'}\n\n"
-        f"【用户上传数据】\n{data_text or '未提供'}\n\n"
-        f"【用户问题】\n{question}\n\n"
-        "请用中文回答，结构清晰，避免空泛套话。"
-    )
-
-    extra_body = None
-    if text_model.lower().startswith('kimi'):
-        extra_body = {'thinking': {'type': 'disabled'}}
-
-    try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        resp = client.chat.completions.create(
-            model=text_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.6,
-            max_tokens=4096,
-            extra_body=extra_body,
-        )
-        answer = (resp.choices[0].message.content or '').strip()
-    except Exception as e:
-        return jsonify({'error': f'问答调用失败: {type(e).__name__}: {str(e)[:200]}'}), 500
-
-    return jsonify({
-        'success': True,
-        'answer': answer,
-        'material_name': material_name,
-        'material_pages': len(material.parsed_contents or []) if material else 0,
-        'data_files': [Path(p).name for p in data_paths],
-        'parsed_data_files': data_diag.get('parsed_files', []),
-        'failed_data_files': data_diag.get('failed_files', []),
-    })
-
-
 @app.route('/api/generate', methods=['POST'])
 @login_required
 def generate():
@@ -1459,30 +1344,7 @@ def generate():
     task_dir = UPLOAD_FOLDER / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # 优先使用用户保存的 API Key，其次使用表单提交的
-    api_key_encrypted = request.form.get('api_key', '').strip()
-    api_key_nonce = request.form.get('api_key_nonce', '').strip()
-    
-    # 解密 API Key（如果提供了 nonce）
-    api_key = None
-    if api_key_encrypted:
-        api_key = decrypt_api_key_if_needed(api_key_encrypted, api_key_nonce)
-    
-    # 如果表单没有提供，尝试使用用户保存的 API Key
-    if not api_key:
-        api_key = current_user.get_api_key()
-    
-    if not api_key:
-        return jsonify({'error': '请提供 API Key'}), 400
-
-    base_url = request.form.get('base_url', 'https://api.moonshot.cn/v1').strip()
     system_prompt = request.form.get('system_prompt', DEFAULT_SYSTEM_PROMPT)
-    vision_model = request.form.get('vision_model', 'moonshot-v1-32k-vision-preview')
-    text_model = request.form.get('text_model', 'kimi-k2.5').strip()
-    # 兼容旧版：kimi2.5 -> kimi-k2.5（官方正确模型名）
-    if text_model == 'kimi2.5':
-        text_model = 'kimi-k2.5'
-
     cover_info = {}
     for field in COVER_FIELDS:
         cover_info[field] = request.form.get(field, '').strip()
@@ -1593,6 +1455,12 @@ def generate():
     # 框架模式（无数据生成）：允许无数据生成，并用占位内容填充数据处理章节
     framework_mode = bool(request.form.get('framework_mode', '').strip() == '1')
 
+    try:
+        text_profile,vision_profile=resolve_models(model_form(),bool(material_paths or (raw_data_paths and not data_paths)))
+    except ValueError as exc:return jsonify(error=str(exc)),400
+    vision_profile=vision_profile or text_profile
+    api_key=text_profile['api_key'];base_url=text_profile['base_url'];text_model=text_profile['model'];vision_model=vision_profile['model']
+
     tasks[task_id] = {
         'status': 'processing', 'steps': [],
         'current_step': '准备中...', 'error': None,
@@ -1603,6 +1471,8 @@ def generate():
 
     config = {
         'api_key': api_key, 'base_url': base_url,
+        'provider':text_profile['provider'],'vision_provider':vision_profile['provider'],
+        'vision_api_key':vision_profile['api_key'],'vision_base_url':vision_profile['base_url'],
         'system_prompt': system_prompt,
         'vision_model': vision_model, 'text_model': text_model,
         'material_paths': material_paths, 'data_paths': data_paths,
@@ -1654,7 +1524,7 @@ def _revise_sections_with_instruction(section_contents, instruction, config,
 
     if progress_cb:
         progress_cb(f'正在初始化修订模型客户端（修订 {len(target_sections)} 个章节）...')
-    client = OpenAI(api_key=config['api_key'], base_url=config['base_url'])
+    client = client_for(config)
 
     subset = {k: section_contents.get(k, '') for k in target_sections}
     section_json = json.dumps(subset, ensure_ascii=False)
@@ -1674,11 +1544,6 @@ def _revise_sections_with_instruction(section_contents, instruction, config,
         "不要返回任何解释性文字，不要使用 markdown 代码块。"
     )
 
-    extra_body = None
-    model_name = str(config.get('text_model') or '').lower()
-    if model_name.startswith('kimi'):
-        extra_body = {'thinking': {'type': 'disabled'}}
-
     if progress_cb:
         progress_cb('正在调用模型生成修订内容...')
     resp = client.chat.completions.create(
@@ -1689,7 +1554,6 @@ def _revise_sections_with_instruction(section_contents, instruction, config,
         ],
         temperature=0.6,
         max_tokens=16384,
-        extra_body=extra_body,
     )
     raw = resp.choices[0].message.content or ''
     if progress_cb:
@@ -1712,8 +1576,7 @@ def _revise_sections_with_instruction(section_contents, instruction, config,
             messages=[{"role": "user", "content": repair_prompt}],
             temperature=0.0,
             max_tokens=16384,
-            extra_body=extra_body,
-        )
+            )
         repaired_raw = repair_resp.choices[0].message.content or ''
         repaired_json_text = _extract_json_object(repaired_raw)
         try:
@@ -2129,11 +1992,11 @@ def _parse_system_material(material_id, user_api_key=None):
 
             base_url = (os.environ.get('SYSTEM_BASE_URL') or 'https://api.moonshot.cn/v1').strip()
             # 使用32k vision模型
-            vision_model = (os.environ.get('VISION_MODEL') or 'moonshot-v1-32k-vision-preview').strip()
+            vision_model = default_kimi()
 
             print(f"[预解析] 使用 API: {base_url}, 模型: {vision_model}")
 
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            client = ProviderClient(profile({'provider':'kimi','api_key':api_key,'base_url':base_url,'model':vision_model}))
 
             try:
                 from ai_generator import extract_single_image
@@ -2771,6 +2634,87 @@ def init_admin():
         app.logger.info('[INIT] 已创建初始化管理员账号: %s', initial_admin_email)
 
 
+class UserModelSettings(db.Model):
+    __tablename__ = 'user_model_settings'
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), primary_key=True)
+    ciphertext = db.Column(db.Text, nullable=False)
+    nonce = db.Column(db.String(255), nullable=False)
+
+
+def saved_model_profiles(user):
+    row=db.session.get(UserModelSettings,user.id)
+    if row:
+        return json.loads(decrypt_api_key(row.ciphertext,row.nonce) or '{}')
+    key=user.get_api_key()
+    return {'text':{'provider':'kimi','base_url':'https://api.moonshot.cn/v1','model':default_kimi(),'vision':True,'api_key':key}} if key else {}
+
+
+def resolve_models(data, needs_vision=True):
+    if not isinstance(data,dict):raise ValueError('模型配置格式错误')
+    saved=saved_model_profiles(current_user)
+    text=merge_profile(data.get('text') or {},saved.get('text'))
+    vision=None
+    if not text['vision'] and data.get('vision'):
+        vision=merge_profile(data['vision'],saved.get('vision'))
+    return route_profiles(text,vision,needs_vision)
+
+
+def model_form():
+    raw=request.form.get('model_settings')
+    if raw:
+        try:return json.loads(raw)
+        except ValueError:raise ValueError('模型配置格式错误')
+    return {'text':{'provider':'kimi','base_url':request.form.get('base_url') or 'https://api.moonshot.cn/v1',
+        'model':request.form.get('text_model') or default_kimi(),'api_key':request.form.get('api_key','')}}
+
+
+@app.route('/api/model-catalog')
+def get_model_catalog():
+    return jsonify(catalog())
+
+
+@app.route('/api/user/model-settings',methods=['GET','POST'])
+@login_required
+def model_settings():
+    if request.method=='GET':
+        data=saved_model_profiles(current_user)
+        return jsonify({role:{**{k:v for k,v in p.items() if k!='api_key'},'has_key':bool(p.get('api_key'))} for role,p in data.items()})
+    if request.headers.get('Origin') and __import__('urllib.parse',fromlist=['urlsplit']).urlsplit(request.headers['Origin']).netloc != request.host:
+        return jsonify(error='请求来源不匹配'),403
+    try:
+        text,vision=resolve_models(request.get_json() or {},needs_vision=False)
+        payload={'text':text}
+        if vision and not text['vision']:payload['vision']=vision
+        ciphertext,nonce=encrypt_api_key(json.dumps(payload))
+        row=db.session.get(UserModelSettings,current_user.id) or UserModelSettings(user_id=current_user.id)
+        row.ciphertext=ciphertext;row.nonce=nonce;db.session.add(row);db.session.commit()
+        return jsonify(success=True)
+    except ValueError as exc:return jsonify(error=str(exc)),400
+
+
+@app.route('/api/test-model',methods=['POST'])
+@login_required
+def test_model_connection():
+    try:
+        data=request.get_json() or {};role=data.get('role','text')
+        if role not in ('text','vision'):raise ValueError('未知模型用途')
+        p=merge_profile(data.get('profile') or {},saved_model_profiles(current_user).get('text' if data.get('shared') else role))
+        if role=='vision' and not p['vision']:raise ValueError('所选模型未标明支持图片')
+        messages=[{'role':'user','content':'只回复 OK'}]
+        if role=='vision':
+            import io,base64,secrets
+            from PIL import Image,ImageDraw
+            code=str(secrets.randbelow(9000)+1000);im=Image.new('RGB',(240,80),'white');ImageDraw.Draw(im).text((15,15),code,fill='black',font_size=40)
+            b=io.BytesIO();im.save(b,format='PNG')
+            messages=[{'role':'user','content':[{'type':'text','text':'只返回图片中的四位数字'},{'type':'image_url','image_url':{'url':'data:image/png;base64,'+base64.b64encode(b.getvalue()).decode()}}]}]
+        client=ProviderClient(p)
+        try:result=client.chat.completions.create(model=p['model'],messages=messages,max_tokens=512)
+        finally:client.close()
+        if role=='vision' and code not in result.choices[0].message.content:raise ValueError('模型未正确识别测试图片，请检查视觉能力')
+        return jsonify(success=True)
+    except (ValueError,RuntimeError) as exc:return jsonify(error=str(exc)),400
+
+
 def init_database():
     """初始化数据库与默认管理员（用于生产容器启动）"""
     with app.app_context():
@@ -2932,3 +2876,5 @@ if __name__ == '__main__':
         "Production startup must use gunicorn. "
         "Run: gunicorn -c gunicorn.conf.py app:app"
     )
+
+

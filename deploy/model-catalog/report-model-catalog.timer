@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Kimi models every 24 hours
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+Unit=report-model-catalog.service
+
+[Install]
+WantedBy=timers.target

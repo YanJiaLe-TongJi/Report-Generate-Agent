@@ -121,49 +121,6 @@ textarea{
   color:var(--text2);
   line-height:1.7;
 }
-.assistant-answer{
-  height:420px;
-  max-height:52vh;
-  overflow-y:auto;
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:16px 18px;
-  background:#f8fafc;
-  color:var(--text2);
-  font-size:14px;
-  line-height:1.75;
-  overscroll-behavior:contain;
-}
-.assistant-answer.is-ready{color:var(--text)}
-.assistant-answer.is-error{color:var(--error)}
-.assistant-answer h1,
-.assistant-answer h2,
-.assistant-answer h3{line-height:1.35}
-.assistant-answer p{margin:0 0 10px}
-.assistant-answer table{
-  width:100%;
-  border-collapse:collapse;
-  margin:10px 0 14px;
-  background:#fff;
-  font-size:13px;
-}
-.assistant-answer th,
-.assistant-answer td{
-  border:1px solid var(--border);
-  padding:7px 8px;
-  vertical-align:top;
-}
-.assistant-answer th{background:#eef2ff;color:var(--text);font-weight:600}
-.assistant-answer blockquote{
-  border-left:3px solid var(--amber);
-  margin:10px 0;
-  padding:8px 12px;
-  background:#fffbeb;
-  color:var(--text);
-}
-.assistant-answer::-webkit-scrollbar{width:10px}
-.assistant-answer::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px;border:2px solid #f8fafc}
-.assistant-answer::-webkit-scrollbar-track{background:#f8fafc}
 
 /* Modal Styles */
 .modal {
@@ -374,7 +331,7 @@ textarea{
 
 <div class="container">
   <h1>物理实验报告生成器</h1>
-  <p class="subtitle">基于 Kimi API · LaTeX/Word 双格式 · 自动公式渲染 · 支持参考样例</p>
+  <p class="subtitle">支持主流国产模型 · LaTeX/Word 双格式 · 自动公式渲染 · 支持参考样例</p>
 
   <div class="card">
     <div class="card-title">操作教学视频</div>
@@ -392,47 +349,14 @@ textarea{
 
   <!-- API Config -->
   <div class="card">
-    <div class="card-title">API 配置</div>
-    <div class="row">
-      <div style="flex:2">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <label for="apiKey" style="margin-bottom:0;">Moonshot API Key</label>
-            <a class="inline-link" href="https://platform.moonshot.cn/console/api-keys" target="_blank" rel="noopener noreferrer">
-              申请 Key 链接
-            </a>
-          </div>
-          <button class="btn btn-sm btn-success" onclick="saveApiKey()" style="padding:4px 10px;font-size:12px;">保存到账户</button>
-        </div>
-        <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" value="{{ user_api_key or '' }}">
-      </div>
-      <div style="flex:1">
-        <label for="baseUrl">API 地址</label>
-        <select id="baseUrl">
-          <option value="https://api.moonshot.cn/v1" selected>api.moonshot.cn（国内）</option>
-          <option value="https://api.moonshot.ai/v1">api.moonshot.ai（国际）</option>
-        </select>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label for="visionModel">Vision 模型</label>
-        <select id="visionModel">
-          <option value="moonshot-v1-8k-vision-preview">moonshot-v1-8k-vision-preview</option>
-          <option value="moonshot-v1-32k-vision-preview" selected>moonshot-v1-32k-vision-preview</option>
-          <option value="moonshot-v1-128k-vision-preview">moonshot-v1-128k-vision-preview</option>
-        </select>
-      </div>
-      <div>
-        <label for="textModel">文本生成模型</label>
-        <select id="textModel">
-          <option value="kimi-k2.5" selected>kimi-k2.5</option>
-          <option value="moonshot-v1-32k">moonshot-v1-32k</option>
-          <option value="moonshot-v1-128k">moonshot-v1-128k</option>
-          <option value="moonshot-v1-auto">moonshot-v1-auto</option>
-        </select>
-      </div>
-      <div>
+    <div class="card-title">模型设置</div>
+    <p class="hint" id="catalogStatus">正在加载模型目录…</p>
+    <div id="modelText"></div>
+    <div id="modelVision" hidden></div>
+    <p class="hint" id="visionHint"></p>
+    <button class="btn btn-sm btn-success" onclick="saveModelSettings()">保存到账户</button>
+    <p class="hint">密钥加密保存在账户中，留空使用已保存的密钥。更换服务商或地址后请重新填写。Kimi K3 需先在平台充值开通，也可选择 K2.6。</p>
+    <div class="row"><div>
         <label for="outputFormat">输出格式</label>
         <select id="outputFormat">
           <option value="latex">PDF (LaTeX 编译)</option>
@@ -587,31 +511,6 @@ textarea{
     </div>
   </div>
 
-  <!-- Experiment Assistant -->
-  <div class="card">
-    <div class="card-title">实验问答与数据处理助手</div>
-    <div class="hint" style="margin-top:0;">基于上方选择的系统实验资料和下方上传的数据文件回答问题，只做原理解释、计算核对和数据处理建议。</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:flex-start;">
-      <div>
-        <label for="assistantQuestion">问题</label>
-        <textarea id="assistantQuestion" style="min-height:120px;" placeholder="例如：这个实验的数据处理应使用哪个公式？请根据我上传的 Excel 检查单位换算和有效数字。"></textarea>
-        <div class="upload-zone" id="dropQaData" style="min-height:92px;margin-top:12px;">
-          <input type="file" multiple accept=".xlsx,.xls,.csv" id="inputQaData">
-          <div class="upload-icon">&#128202;</div>
-          <div class="upload-label">问答数据表</div>
-          <div class="upload-hint">Excel / CSV，可选</div>
-        </div>
-        <div class="file-list" id="listQaData"></div>
-        <button class="btn btn-primary" id="btnAssistant" onclick="submitExperimentQuestion()" style="margin-top:12px;width:100%;">提交问答</button>
-      </div>
-      <div>
-        <label>回答</label>
-        <div id="assistantAnswer" class="assistant-answer">请选择系统实验资料或上传数据表，然后输入问题。</div>
-        <div id="assistantMeta" class="hint" style="margin-bottom:0;"></div>
-      </div>
-    </div>
-  </div>
-
   <!-- Generate -->
   <button class="btn btn-primary" id="btnGenerate" onclick="startGenerate()">生成报告</button>
 
@@ -686,7 +585,7 @@ const WORD_PROMPT = `你是一个物理实验报告撰写助手。请根据提�
 11. 当资料要求或用户明确要求展示数据趋势时，可插入数据图并在正文中解释图像结论`;
 
 let currentFormat = 'word';
-const files = { materials: [], data: [], examples: [], rawData: [], qaData: [], systemExpId: null };
+const files = { materials: [], data: [], examples: [], rawData: [], systemExpId: null };
 let lastCompletedTaskId = null;
 let SYSTEM_EXPERIMENTS = [];
 let announcementHistory = [];
@@ -946,7 +845,6 @@ function formatFileSize(bytes) {
 function renderFileList(key) {
   const id = 'list' + key.charAt(0).toUpperCase() + key.slice(1);
   const el = document.getElementById(id);
-  if (!el) return;
   if (!files[key].length) { el.innerHTML = ''; return; }
   el.innerHTML = files[key].map((f, i) =>
     `<div class="file-item"><span class="name">${f.name} <span style="color:var(--text3);font-size:11px;">(${formatFileSize(f.size)})</span></span><button class="remove" onclick="removeFile('${key}',${i})">&times;</button></div>`
@@ -958,7 +856,6 @@ function initUploadZones() {
   setupDrop('dropMaterials', 'inputMaterials', 'materials', true);
   setupDrop('dropData', 'inputData', 'data', true);
   setupDrop('dropExamples', 'inputExamples', 'examples', true);
-  setupDrop('dropQaData', 'inputQaData', 'qaData', true);
 
   // 原始数据记录单（支持多张）
   const rawDataZone = document.getElementById('dropRawData');
@@ -1010,94 +907,9 @@ function removeRawDataFile(index) {
   renderRawDataList();
 }
 
-function saveApiKey() {
-  const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey) { alert('请输入 API Key'); return; }
-  fetch('/api/user/apikey', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey })
-  })
-  .then(async r => {
-    const ct = r.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) {
-      if (r.status === 401 || r.status === 302) {
-        throw new Error('登录已过期，请重新登录');
-      }
-      throw new Error(`服务器返回异常（HTTP ${r.status}）`);
-    }
-    return r.json();
-  })
-  .then(d => {
-    if (d.error) { alert('保存失败: ' + d.error); return; }
-    alert('API Key 已保存到账户');
-  })
-  .catch(e => alert('保存失败: ' + e.message));
-}
-
-function submitExperimentQuestion() {
-  const apiKey = document.getElementById('apiKey').value.trim();
-  const questionEl = document.getElementById('assistantQuestion');
-  const answerEl = document.getElementById('assistantAnswer');
-  const metaEl = document.getElementById('assistantMeta');
-  const btn = document.getElementById('btnAssistant');
-  const question = (questionEl.value || '').trim();
-
-  if (!apiKey) { alert('请输入 API Key'); return; }
-  if (!question) { alert('请输入要咨询的问题'); questionEl.focus(); return; }
-
-  const fd = new FormData();
-  fd.append('api_key', apiKey);
-  fd.append('base_url', document.getElementById('baseUrl').value);
-  fd.append('text_model', document.getElementById('textModel').value);
-  fd.append('question', question);
-  if (files.systemExpId) fd.append('system_material_id', files.systemExpId);
-  files.qaData.forEach(f => fd.append('qa_data', f));
-
-  btn.disabled = true;
-  btn.textContent = '回答中...';
-  answerEl.textContent = (files.systemExpId || files.qaData.length)
-    ? '正在检索系统资料并分析数据...'
-    : '正在思考...';
-  answerEl.classList.remove('is-ready', 'is-error');
-  answerEl.scrollTop = 0;
-  if (metaEl) metaEl.textContent = '';
-
-  fetch('/api/experiment-assistant', { method: 'POST', body: fd })
-    .then(async r => {
-      const contentType = r.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error(`服务器返回异常（HTTP ${r.status}）`);
-      }
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || '问答请求失败');
-      return d;
-    })
-    .then(d => {
-      answerEl.innerHTML = renderMarkdown(d.answer || '未返回有效回答');
-      answerEl.classList.add('is-ready');
-      answerEl.classList.remove('is-error');
-      answerEl.scrollTop = 0;
-      const bits = [];
-      if (d.material_name) bits.push(`知识库：${d.material_name}（${d.material_pages || 0} 页资料）`);
-      if (d.parsed_data_files && d.parsed_data_files.length) bits.push(`已解析数据表：${d.parsed_data_files.length} 个`);
-      if (d.failed_data_files && d.failed_data_files.length) bits.push(`解析失败：${d.failed_data_files.length} 个`);
-      if (metaEl) metaEl.textContent = bits.join(' · ');
-    })
-    .catch(e => {
-      answerEl.textContent = '问答失败: ' + e.message;
-      answerEl.classList.add('is-error');
-      answerEl.classList.remove('is-ready');
-    })
-    .finally(() => {
-      btn.disabled = false;
-      btn.textContent = '提交问答';
-    });
-}
-
 function startGenerate() {
-  const apiKey = document.getElementById('apiKey').value.trim();
-  if (!apiKey) { alert('请输入 API Key'); return; }
+  let modelSettings;
+  try { modelSettings = collectModelSettings(); } catch(e) { alert(e.message); return; }
   const frameworkModeEl = document.getElementById('frameworkMode');
   const frameworkMode = !!(frameworkModeEl && frameworkModeEl.checked);
   // 验证：实验资料 或 系统实验至少一个；实验数据 或 原始数据记录单 至少一个（框架模式可跳过数据验证）
@@ -1130,11 +942,8 @@ function startGenerate() {
   if (resultHint) resultHint.textContent = '';
 
   const fd = new FormData();
-  fd.append('api_key', apiKey);
-  fd.append('base_url', document.getElementById('baseUrl').value);
+  fd.append('model_settings', JSON.stringify(modelSettings));
   fd.append('system_prompt', document.getElementById('systemPrompt').value);
-  fd.append('vision_model', document.getElementById('visionModel').value);
-  fd.append('text_model', document.getElementById('textModel').value);
   fd.append('output_format', document.getElementById('outputFormat').value);
 
   fd.append('experiment_name', document.getElementById('coverExpName').value);
@@ -1518,7 +1327,6 @@ function renderMarkdown(md) {
   const out = [];
   let inUl = false;
   let inOl = false;
-  let inTable = false;
 
   const closeLists = () => {
     if (inUl) {
@@ -1530,34 +1338,19 @@ function renderMarkdown(md) {
       inOl = false;
     }
   };
-  const closeTable = () => {
-    if (inTable) {
-      out.push('</tbody></table>');
-      inTable = false;
-    }
-  };
-  const isTableDivider = (text) => /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(text);
-  const parseTableRow = (text) => text
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map(cell => cell.trim());
 
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const rawLine = lines[lineIndex];
+  for (const rawLine of lines) {
     const line = rawLine.trimEnd();
     const trimmed = line.trim();
 
     if (!trimmed) {
       closeLists();
-      closeTable();
       continue;
     }
 
     const codeMatch = trimmed.match(/^@@CODEBLOCK_(\d+)@@$/);
     if (codeMatch) {
       closeLists();
-      closeTable();
       out.push(trimmed);
       continue;
     }
@@ -1567,7 +1360,6 @@ function renderMarkdown(md) {
     const h1 = trimmed.match(/^#\s+(.+)$/);
     if (h3 || h2 || h1) {
       closeLists();
-      closeTable();
       if (h1) out.push(`<h1 style="font-size:20px;color:#2563eb;margin:20px 0 12px;">${inline(h1[1])}</h1>`);
       if (h2) out.push(`<h2 style="font-size:17px;color:#1e293b;margin:16px 0 10px;font-weight:600;">${inline(h2[1])}</h2>`);
       if (h3) out.push(`<h3 style="font-size:15px;color:#334155;margin:12px 0 8px;font-weight:600;">${inline(h3[1])}</h3>`);
@@ -1576,43 +1368,12 @@ function renderMarkdown(md) {
 
     if (/^([-*_]\s*){3,}$/.test(trimmed)) {
       closeLists();
-      closeTable();
       out.push('<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">');
-      continue;
-    }
-
-    if (trimmed.includes('|')) {
-      const row = parseTableRow(trimmed);
-      const nextLine = (lines[lineIndex + 1] || '').trim();
-      if (!inTable && row.length > 1 && isTableDivider(nextLine)) {
-        closeLists();
-        out.push('<table><thead><tr>' + row.map(cell => `<th>${inline(cell)}</th>`).join('') + '</tr></thead><tbody>');
-        inTable = true;
-        lineIndex++;
-        continue;
-      }
-      if (inTable) {
-        if (!isTableDivider(trimmed) && row.length > 1) {
-          out.push('<tr>' + row.map(cell => `<td>${inline(cell)}</td>`).join('') + '</tr>');
-          continue;
-        }
-        if (isTableDivider(trimmed)) continue;
-      }
-    } else {
-      closeTable();
-    }
-
-    const quote = trimmed.match(/^>\s*(.+)$/);
-    if (quote) {
-      closeLists();
-      closeTable();
-      out.push(`<blockquote>${inline(quote[1])}</blockquote>`);
       continue;
     }
 
     const ul = trimmed.match(/^[-*+]\s+(.+)$/);
     if (ul) {
-      closeTable();
       if (inOl) {
         out.push('</ol>');
         inOl = false;
@@ -1627,7 +1388,6 @@ function renderMarkdown(md) {
 
     const ol = trimmed.match(/^\d+\.\s+(.+)$/);
     if (ol) {
-      closeTable();
       if (inUl) {
         out.push('</ul>');
         inUl = false;
@@ -1641,12 +1401,10 @@ function renderMarkdown(md) {
     }
 
     closeLists();
-    closeTable();
     out.push(`<p style="margin:8px 0;line-height:1.6;">${inline(trimmed)}</p>`);
   }
 
   closeLists();
-  closeTable();
   let html = out.join('');
 
   codeBlocks.forEach((code, i) => {
@@ -1961,5 +1719,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     </div>
   </div>
 </div>
+<script src="{{ url_for('static', filename='js/model-settings.js') }}"></script>
 </body>
 </html>

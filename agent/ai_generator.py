@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI
+from model_providers import client_for
 from openpyxl import Workbook, load_workbook
 from docx import Document
 from pathlib import Path
@@ -384,7 +384,8 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
         _update(task_id, '正在初始化数据提取模型...', tasks_dict)
 
         api_key = config['api_key']
-        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        client = client_for(config)
+        vision_client = client_for(config,vision=True)
         raw_data_paths = config.get('raw_data_paths') or []
         if isinstance(raw_data_paths, str):
             raw_data_paths = [raw_data_paths]
@@ -395,7 +396,7 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
         total = len(raw_data_paths)
         for i, path in enumerate(raw_data_paths):
             _update(task_id, f'正在提取原始数据记录单 ({i + 1}/{total})...', tasks_dict)
-            content = extract_raw_data_from_image(path, client, config['vision_model'])
+            content = extract_raw_data_from_image(path, vision_client, config['vision_model'])
             extracted_items.append({
                 'page': i + 1,
                 'path': path,
@@ -439,6 +440,9 @@ def run_raw_data_extraction(task_id, config, tasks_dict):
             tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
         traceback.print_exc()
         return False
+    finally:
+        for name in ('client','vision_client'):
+            if name in locals():locals()[name].close()
 
 
 def _generate_section(client, model, system_prompt, section_name,
@@ -588,11 +592,6 @@ def _generate_section(client, model, system_prompt, section_name,
             "若必须给出数值结论，请明确指出缺失字段。"
         )
     
-    extra_body = None
-    model_name = str(model or '').lower()
-    if model_name.startswith('kimi'):
-        # 通过 extra_body 透传厂商扩展参数，避免 SDK 关键字参数报错
-        extra_body = {'thinking': {'type': 'disabled'}}
     section_max_tokens = 8192 if section_name == '数据记录处理' else 4096
     
     resp = client.chat.completions.create(
@@ -603,7 +602,6 @@ def _generate_section(client, model, system_prompt, section_name,
         ],
         temperature=0.6,
         max_tokens=section_max_tokens,
-        extra_body=extra_body,
     )
     raw = resp.choices[0].message.content
     return (raw or '').strip()
@@ -1037,7 +1035,8 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         _update(task_id, '正在初始化 API...', tasks_dict)
 
         api_key = config['api_key']
-        client = OpenAI(api_key=api_key, base_url=config['base_url'])
+        client = client_for(config)
+        vision_client = client_for(config,vision=True)
 
         # Phase 0: 资料识别
         image_contents = []
@@ -1056,7 +1055,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             total = len(config['material_paths'])
             for i, path in enumerate(config['material_paths']):
                 _update(task_id, f'正在识别资料图片 ({i + 1}/{total})...', tasks_dict)
-                content = extract_single_image(path, client, config['vision_model'])
+                content = extract_single_image(path, vision_client, config['vision_model'])
                 image_contents.append({'page': i + 1, 'path': path, 'content': content})
                 if i < total - 1:
                     time.sleep(0.5)
@@ -1148,7 +1147,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
         if use_raw_data_ocr and not data_text and raw_data_path:
             _update(task_id, '正在从原始数据记录单提取数据...', tasks_dict)
             try:
-                raw_data_content = extract_raw_data_from_image(raw_data_path, client, config['vision_model'])
+                raw_data_content = extract_raw_data_from_image(raw_data_path, vision_client, config['vision_model'])
                 data_text = raw_data_content
                 _update(task_id, '✓ 已从原始数据记录单提取数据', tasks_dict)
             except Exception as e:
@@ -1203,7 +1202,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             if err:
                 err_msg = _format_generation_error(err)
                 _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
-                section_contents[sec_name] = f'生成失败: {err_msg}'
+                raise RuntimeError(f'「{sec_name}」生成失败: {err_msg}')
             else:
                 _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
                 section_contents[sec_name] = _sanitize_section_content(content)
@@ -1348,7 +1347,7 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             if err:
                 err_msg = _format_generation_error(err)
                 _update(task_id, f'「{sec_name}」生成失败: {err_msg}', tasks_dict)
-                section_contents[sec_name] = f'生成失败: {err_msg}'
+                raise RuntimeError(f'「{sec_name}」生成失败: {err_msg}')
             else:
                 _update(task_id, f'「{sec_name}」生成完成', tasks_dict)
                 section_contents[sec_name] = _sanitize_section_content(content)
@@ -1366,3 +1365,6 @@ def run_ai_generation(task_id, config, tasks_dict, format_type='latex'):
             tasks_dict[task_id]['error'] = f'{type(e).__name__}: {str(e)}'
         traceback.print_exc()
         return None
+    finally:
+        for name in ('client','vision_client'):
+            if name in locals():locals()[name].close()

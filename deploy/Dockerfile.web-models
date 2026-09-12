@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=agent-report-app:pre-assistant-63bfd9d62e523f6d2123b74e4cecbf66ca2c23f7
+FROM ${BASE_IMAGE}
+COPY agent/app.py agent/ai_generator.py agent/model_catalog.py agent/model_providers.py /app/
+COPY agent/templates/index.html agent/templates/welcome.md /app/templates/
+COPY agent/static/js/model-settings.js /app/static/js/model-settings.js

@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh official Kimi model catalog for physics report website
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec report-app python /app/model_catalog.py
+TimeoutStartSec=60

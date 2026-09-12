@@ -3,31 +3,46 @@ let modelCatalog, savedModels = {}, modelReady = false;
 const mel = id => document.getElementById(id);
 function modelPanel(role, title) {
   const box = mel(role === 'text' ? 'modelText' : 'modelVision');
-  box.innerHTML = `<h3>${title}</h3><div class="row"><div><label for="${role}Provider">服务商</label><select id="${role}Provider"></select></div><div><label for="${role}Model">模型 ID（可修改）</label><input id="${role}Model" list="${role}Models"><datalist id="${role}Models"></datalist></div></div><div class="row"><div><label for="${role}Base">Base URL</label><input id="${role}Base"></div><div><label for="${role}Key">API Key</label><input type="password" autocomplete="new-password" id="${role}Key" placeholder="填写 API Key"></div></div><label><input type="checkbox" id="${role}Vision" style="width:auto"> 此模型支持图片（目录内模型自动判断，自定义模型请确认）</label><button type="button" class="btn btn-sm btn-outline" id="${role}Test">测试${role === 'vision' ? '图片识别' : '连接'}</button><span id="${role}Result" role="status"></span>`;
+  box.innerHTML = `<h3>${title}</h3><div class="row"><div><label for="${role}Provider">服务商</label><select id="${role}Provider"></select></div><div><label for="${role}Model">模型</label><select id="${role}Model"></select><div id="${role}CustomModelBox" hidden><label for="${role}CustomModel">自定义模型 ID</label><input type="text" id="${role}CustomModel" placeholder="填写模型 ID"></div></div></div><div class="row"><div><label for="${role}Base">Base URL</label><input id="${role}Base"></div><div><label for="${role}Key">API Key</label><input type="password" autocomplete="new-password" id="${role}Key" placeholder="填写 API Key"></div></div><label><input type="checkbox" id="${role}Vision" style="width:auto"> 此模型支持图片（目录内模型自动判断，自定义模型请确认）</label><button type="button" class="btn btn-sm btn-outline" id="${role}Test">测试${role === 'vision' ? '图片识别' : '连接'}</button><span id="${role}Result" role="status"></span>`;
   const select = mel(role+'Provider');
   select.add(new Option('请选择服务商',''));
   for (const id of ['deepseek','kimi','qwen','minimax','glm','custom']) select.add(new Option(modelCatalog.providers[id].name,id));
   select.onchange = () => setModelProvider(role);
-  mel(role+'Model').oninput = () => updateCapability(role);
+  mel(role+'Model').onchange = () => {
+    mel(role+'Vision').checked=false;
+    updateCapability(role);
+  };
+  mel(role+'CustomModel').oninput = () => updateCapability(role);
   mel(role+'Vision').onchange = updateVisionPanel;
   mel(role+'Test').onclick = () => testModel(role);
 }
 function setModelProvider(role, saved) {
   const id=mel(role+'Provider').value, p=modelCatalog.providers[id];
-  mel(role+'Models').replaceChildren();
+  const select=mel(role+'Model');
+  select.replaceChildren();
+  select.disabled=!p;
+  mel(role+'CustomModel').value='';
   mel(role+'Key').value='';
   mel(role+'Key').placeholder=saved?.has_key ? '已保存；留空沿用' : '填写 API Key';
   mel(role+'Base').value=saved?.base_url || p?.base_url || '';
-  for (const m of p?.models || []) mel(role+'Models').append(new Option(m.id+(m.vision?' · 支持图片':' · 纯文本'),m.id));
+  for (const m of p?.models || []) select.add(new Option(m.id+(m.vision?' · 支持视觉':' · 不支持视觉'),m.id));
+  if(p && id!=='kimi') select.add(new Option('自定义模型…','__custom__'));
+  if(!p) select.add(new Option('请先选择服务商',''));
   let model=saved?.model || p?.models[0]?.id || '';
   if(id==='kimi' && !p.models.some(m=>m.id===model)) model=p.models[0].id;
-  mel(role+'Model').value=model;
+  const known=p?.models.some(m=>m.id===model);
+  select.value=known?model:(p && id!=='kimi'?'__custom__':'');
+  if(!known) mel(role+'CustomModel').value=model;
   mel(role+'Vision').checked=!!saved?.vision;
   updateCapability(role);
 }
+function selectedModelId(role) {
+  return mel(role+'Model').value==='__custom__'?mel(role+'CustomModel').value.trim():mel(role+'Model').value;
+}
 function updateCapability(role) {
+  mel(role+'CustomModelBox').hidden=mel(role+'Model').value!=='__custom__';
   const p=modelCatalog.providers[mel(role+'Provider').value];
-  const known=p?.models.find(m=>m.id===mel(role+'Model').value.trim());
+  const known=p?.models.find(m=>m.id===selectedModelId(role));
   mel(role+'Vision').disabled=!!known;
   if(known) mel(role+'Vision').checked=known.vision;
   updateVisionPanel();
@@ -43,7 +58,7 @@ function readModel(role, required=true) {
   const provider=mel(role+'Provider').value;
   if(!provider && !required) return null;
   if(!provider) throw Error('请选择'+(role==='text'?'写作':'视觉')+'服务商');
-  const p={provider, model:mel(role+'Model').value.trim(),base_url:mel(role+'Base').value.trim(),api_key:mel(role+'Key').value.trim(),vision:mel(role+'Vision').checked};
+  const p={provider, model:selectedModelId(role),base_url:mel(role+'Base').value.trim(),api_key:mel(role+'Key').value.trim(),vision:mel(role+'Vision').checked};
   if(!p.model || !p.base_url) throw Error('请填写模型 ID 和 Base URL');
   const saved=savedModels[role];
   if(!p.api_key && !(saved?.has_key && saved.provider===provider && saved.base_url.replace(/\/$/,'')===p.base_url.replace(/\/$/,''))) throw Error('请填写此服务商的 API Key');
